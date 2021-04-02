@@ -29,10 +29,15 @@ setup: debian/control
 build: debian/control-real build-arch build-indep
 
 build-arch: debian/control
-ifeq ($(filter noobs,$(DEB_BUILD_PROFILES)),)
-	dh_signobs_getcert debian/certs/obs.pem
-	cat debian/certs/obs.pem >> debian/certs/vyatta_db.pem || true
-endif
+#<<<<<<< HEAD
+#ifeq ($(filter noobs,$(DEB_BUILD_PROFILES)),)
+#	dh_signobs_getcert debian/certs/obs.pem
+#	cat debian/certs/obs.pem >> debian/certs/vyatta_db.pem || true
+#endif
+#=======
+	#dh_signobs_getcert debian/certs/obs.pem
+	#cat debian/certs/obs.pem >> debian/certs/vyatta_db.pem || true
+#>>>>>>> eea8baa62faf... turn off signing
 	dh_testdir
 	$(MAKE) -f debian/rules.gen build-arch_$(DEB_HOST_ARCH)
 
@@ -45,9 +50,13 @@ binary:	binary-indep binary-arch
 binary-arch: build-arch
 	dh_testdir
 	$(MAKE) -f debian/rules.gen binary-arch_$(DEB_HOST_ARCH)
-ifeq ($(filter noobs,$(DEB_BUILD_PROFILES)),)
-	dh_signobs_pack
-endif
+#<<<<<<< HEAD
+#ifeq ($(filter noobs,$(DEB_BUILD_PROFILES)),)
+#	dh_signobs_pack
+#endif
+#=======
+#	#dh_signobs_pack
+#>>>>>>> eea8baa62faf... turn off signing
 
 binary-indep: build-indep
 	dh_testdir
