@@ -76,6 +76,7 @@ Multi-Arch: foreign
 
 Package: linux-headers-amd64
 Architecture: amd64
+Provides: linux-headers
 Depends: linux-headers-5.10.0-trunk-vyatta-amd64 (= ${binary:Version}), ${misc:Depends}
 Description: Header files for Linux amd64 configuration (meta-package)
  This package depends on the architecture-specific header files for the
