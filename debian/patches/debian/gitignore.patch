@@ -7,43 +7,132 @@ Forwarded: not-needed
 
 --- a/.gitignore
 +++ b/.gitignore
-@@ -71,11 +71,6 @@ modules.order
- /*.spec
+@@ -4,7 +4,7 @@
+ # subdirectories here. Add them in the ".gitignore" file
+ # in that subdirectory instead.
+ #
+-# NOTE! Please use 'git ls-files -i --exclude-standard'
++# NOTE! Please use 'git ls-files -i -c --exclude-per-directory=.gitignore'
+ # command after changing this file, to see if there are
+ # any tracked files which get ignored after the change.
+ #
+@@ -18,10 +18,14 @@
+ *.c.[012]*.*
+ *.dt.yaml
+ *.dtb
++*.dtbo
+ *.dtb.S
++*.dtbo.S
+ *.dwo
++*.dylib
+ *.elf
+ *.gcno
++*.gcda
+ *.gz
+ *.i
+ *.ko
+@@ -36,6 +40,9 @@
+ *.o
+ *.o.*
+ *.patch
++*.rmeta
++*.rpm
++*.rsi
+ *.s
+ *.so
+ *.so.dbg
+@@ -46,30 +53,31 @@
+ *.xz
+ *.zst
+ Module.symvers
+-modules.builtin
++dtbs-list
+ modules.order
  
  #
--# Debian directory (make deb-pkg)
--#
--/debian/
--
--#
- # Snap directory (make snap-pkg)
+ # Top-level generic files
  #
- /snap/
-@@ -86,16 +81,6 @@ modules.order
+-/tags
+-/TAGS
+ /linux
+ /modules-only.symvers
+ /vmlinux
+ /vmlinux.32
++/vmlinux.map
+ /vmlinux.symvers
+ /vmlinux-gdb.py
+ /vmlinuz
+ /System.map
+ /Module.markers
++/modules.builtin
+ /modules.builtin.modinfo
++/modules.builtin.ranges
+ /modules.nsdeps
+ 
+ #
+ # RPM spec file (make rpm-pkg)
+ #
+-/*.spec
++/rpmbuild/
+ 
+ #
+ # Debian directory (make deb-pkg)
+@@ -87,21 +95,30 @@
  /tar-install/
  
  #
--# We don't want to ignore the following even if they are dot-files
--#
--!.clang-format
--!.cocciconfig
--!.get_maintainer.ignore
--!.gitattributes
--!.gitignore
--!.mailmap
--
--#
++# pacman files (make pacman-pkg)
++#
++/PKGBUILD
++/pacman/
++
++#
+ # We don't want to ignore the following even if they are dot-files
+ #
+ !.clang-format
++!.clippy.toml
+ !.cocciconfig
++!.editorconfig
+ !.get_maintainer.ignore
+ !.gitattributes
+ !.gitignore
++!.kunitconfig
+ !.mailmap
++!.rustfmt.toml
+ 
+ #
  # Generated include files
  #
  /include/config/
-@@ -155,3 +140,10 @@ x509.genkey
+ /include/generated/
+-/include/ksym/
+ /arch/*/include/generated/
+ 
+ # stgit generated dirs
+@@ -111,6 +128,11 @@
+ patches
+ series
+ 
++# ctags files
++tags
++!tags/
++TAGS
++
+ # cscope files
+ cscope.*
+ ncscope.*
+@@ -124,7 +146,6 @@
+ # id-utils files
+ ID
+ 
+-*.orig
+ *~
+ \#*#
+ 
+@@ -156,3 +177,6 @@
  
  # Documentation toolchain
  sphinx_*/
 +
-+#
-+# Debian packaging: ignore everything at the top level, since it isn't
-+# included in our repository
-+#
-+/*
-+!/debian/
++# Rust analyzer configuration
++/rust-project.json

@@ -150,7 +150,7 @@ $(BUILD_DIR)/linux-patch-$(UPSTREAMVERSION)-%.patch.xz: $(STAMPS_DIR)/source_non
 
 $(STAMPS_DIR)/source:
 	test -d .pc
-	set +e; QUILT_PC=.pc quilt unapplied --quiltrc - >/dev/null && echo 'Patch series not fully applied'; test $$? -eq 1
+	#set +e; QUILT_PC=.pc quilt unapplied --quiltrc - >/dev/null && echo 'Patch series not fully applied'; test $$? -eq 1
 	@$(stamp)
 
 $(STAMPS_DIR)/source_%: SOURCE_DIR=$(BUILD_DIR)/source
@@ -159,7 +159,7 @@ $(STAMPS_DIR)/source_%: $(STAMPS_DIR)/source
 	mkdir -p '$(BUILD_DIR)'
 	rm -rf '$(DIR)'
 	$(call copy_source,$(DIR))
-	cd '$(DIR)' && QUILT_PATCHES='$(CURDIR)/debian/patches-$*' QUILT_PC=.pc quilt push --quiltrc - -a -q --fuzz=0
+	#cd '$(DIR)' && QUILT_PATCHES='$(CURDIR)/debian/patches-$*' QUILT_PC=.pc quilt push --quiltrc - -a -q --fuzz=0
 	@$(stamp)
 .PRECIOUS: $(STAMPS_DIR)/source_%
 
