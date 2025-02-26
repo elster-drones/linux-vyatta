@@ -1,10 +1,9 @@
-PROGS = \
-	bin2c \
-	extract-cert \
-	kallsyms \
-	recordmcount \
-	sign-file \
-	unifdef
+#PROGS = \
+#	extract-cert \
+#	kallsyms \
+#	recordmcount \
+#	sign-file \
+#	unifdef
 
 DATA = \
 	Kbuild.include \
@@ -33,11 +32,11 @@ SCRIPTS =  \
 	setlocalversion \
 	ver_linux
 
-SUBDIRS = \
-	basic \
-	genksyms \
-	kconfig \
-	mod
+#SUBDIRS = \
+#	basic \
+#	genksyms \
+#	kconfig \
+#	mod
 
 include $(top_rulesdir)/Makefile.inc
 
