@@ -739,42 +739,42 @@ endif
 	dh_md5sums
 	dh_builddeb
 
-build-perf: $(STAMPS_DIR)/build-tools-headers
-	$(call make-tools,tools/perf)
-
-install-perf: PACKAGE_NAME = linux-perf-$(VERSION)
-install-perf: DH_OPTIONS = -p$(PACKAGE_NAME)
-install-perf: DIR = $(CURDIR)/debian/$(PACKAGE_NAME)
-install-perf: build-perf
-	dh_testdir
-	dh_testroot
-	dh_prep
-	$(call make-tools,tools/perf) install DESTDIR=$(DIR)
-	# do not ship python2 script
-	rm -f $(DIR)/usr/lib/perf_$(VERSION)-core/scripts/python/call-graph-from-sql.py
-	dh_perl /usr/lib/perf_$(VERSION)-core/scripts/perl/Perf-Trace-Util/lib/
-	dh_python3 /usr/lib/perf_$(VERSION)-core/scripts/python/Perf-Trace-Util/lib/
-	dh_installchangelogs
-ifeq (,$(filter nodoc,$(DEB_BUILD_PROFILES)))
-	dh_installdocs
-endif
-	dh_lintian
-	dh_strip
-	dh_compress
-	dh_fixperms
-	dh_installdeb
-	dh_shlibdeps -Xperf-read-vdso
-	dh_gencontrol
-	dh_md5sums
-	dh_builddeb
-
-install-perf-meta: PACKAGE_NAME = linux-perf$(SOURCE_SUFFIX)
-install-perf-meta: DH_OPTIONS = -p$(PACKAGE_NAME)
-install-perf-meta: LINK_DOC_PACKAGE = linux-perf-$(VERSION)
-install-perf-meta:
-	dh_testdir
-	dh_prep
-	+$(MAKE_SELF) install-base
+#build-perf: $(STAMPS_DIR)/build-tools-headers
+#	#$(call make-tools,tools/perf)
+#
+#install-perf: PACKAGE_NAME = linux-perf-$(VERSION)
+#install-perf: DH_OPTIONS = -p$(PACKAGE_NAME)
+#install-perf: DIR = $(CURDIR)/debian/$(PACKAGE_NAME)
+#install-perf: build-perf
+#	dh_testdir
+#	dh_testroot
+#	dh_prep
+#	$(call make-tools,tools/perf) install DESTDIR=$(DIR)
+#	# do not ship python2 script
+#	rm -f $(DIR)/usr/lib/perf_$(VERSION)-core/scripts/python/call-graph-from-sql.py
+#	dh_perl /usr/lib/perf_$(VERSION)-core/scripts/perl/Perf-Trace-Util/lib/
+#	dh_python3 /usr/lib/perf_$(VERSION)-core/scripts/python/Perf-Trace-Util/lib/
+#	dh_installchangelogs
+#ifeq (,$(filter nodoc,$(DEB_BUILD_PROFILES)))
+#	dh_installdocs
+#endif
+#	dh_lintian
+#	dh_strip
+#	dh_compress
+#	dh_fixperms
+#	dh_installdeb
+#	dh_shlibdeps -Xperf-read-vdso
+#	dh_gencontrol
+#	dh_md5sums
+#	dh_builddeb
+#
+#install-perf-meta: PACKAGE_NAME = linux-perf$(SOURCE_SUFFIX)
+#install-perf-meta: DH_OPTIONS = -p$(PACKAGE_NAME)
+#install-perf-meta: LINK_DOC_PACKAGE = linux-perf-$(VERSION)
+#install-perf-meta:
+#	dh_testdir
+#	dh_prep
+#	+$(MAKE_SELF) install-base
 
 build-usbip: $(STAMPS_DIR)/build-tools-headers
 	$(call make-tools,tools/usb/usbip)
