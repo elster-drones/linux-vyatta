@@ -51,10 +51,11 @@ binary-arch: build-arch
 	echo "ERIKDONE"
 	$(MAKE) -f debian/rules.gen binary-arch_$(DEB_HOST_ARCH)
 	set -x
+	echo "ERIK: normal build done"
 ifeq ($(filter noobs,$(DEB_BUILD_PROFILES)),)
 	dh_signobs_pack
+	echo "Done Signing"
 endif
-
 binary-indep: build-indep
 	dh_testdir
 	$(MAKE) -f debian/rules.gen binary-indep
