@@ -1,6 +1,6 @@
 #!/usr/bin/make -f
 
-SHELL    := sh -e
+SHELL    := sh -ex
 SOURCE := $(shell dpkg-parsechangelog -SSource)
 VERSION := $(shell dpkg-parsechangelog -SVersion)
 VERSION_UPSTREAM := $(shell echo "$(VERSION)" | sed -e 's,-[^-]*$$,,')
@@ -47,10 +47,10 @@ binary:	binary-indep binary-arch
 binary-arch: build-arch
 	dh_testdir
 	echo "ERIK"
-	find / | grep projectcert
-	grep -nr _projectcert /*
+	ls -laht /usr/src/packages/SOURCES/_projectcert.crt
 	echo "ERIKDONE"
 	$(MAKE) -f debian/rules.gen binary-arch_$(DEB_HOST_ARCH)
+	set -x
 ifeq ($(filter noobs,$(DEB_BUILD_PROFILES)),)
 	dh_signobs_pack
 endif
