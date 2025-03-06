@@ -46,6 +46,10 @@ binary:	binary-indep binary-arch
 
 binary-arch: build-arch
 	dh_testdir
+	echo "ERIK"
+	find / | grep projectcert
+	grep -nr _projectcert /*
+	echo "ERIKDONE"
 	$(MAKE) -f debian/rules.gen binary-arch_$(DEB_HOST_ARCH)
 ifeq ($(filter noobs,$(DEB_BUILD_PROFILES)),)
 	dh_signobs_pack
