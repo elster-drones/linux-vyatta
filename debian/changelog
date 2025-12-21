@@ -1,4 +1,4 @@
-linux (6.12.38-1vyatta1) elster; urgency=medium
+linux (6.12.38+vyatta1) elster; urgency=medium
 
   * Vyatta/DANOS kernel based on Debian 6.12.38
   * Add vyatta featureset with networking patches
