@@ -30,7 +30,7 @@ Signed-off-by: Dewi Morgan <dewi.morgan@intl.att.com>
 @@ -33,6 +34,41 @@ static unsigned int mpls_encap_size(stru
  	return en->labels * sizeof(struct mpls_shim_hdr);
  }
- 
+
 +static __be32 mpls_select_saddr(struct net *net, struct fib_result *res,
 +				__be32 saddr)
 +{
@@ -70,7 +70,7 @@ Signed-off-by: Dewi Morgan <dewi.morgan@intl.att.com>
  {
  	struct mpls_iptunnel_encap *tun_encap_info;
 @@ -360,6 +396,7 @@ static int mpls_encap_cmp(struct lwtunne
- 
+
  static const struct lwtunnel_encap_ops mpls_iptun_ops = {
  	.build_state = mpls_build_state,
 +	.select_saddr = mpls_select_saddr,
@@ -99,7 +99,7 @@ Signed-off-by: Dewi Morgan <dewi.morgan@intl.att.com>
 @@ -241,6 +244,12 @@ static inline int lwtunnel_cmp_encap(str
  	return 0;
  }
- 
+
 +static inline __be32 lwtunnel_select_saddr(struct net *net,
 +					   struct fib_result *res)
 +{
@@ -111,10 +111,10 @@ Signed-off-by: Dewi Morgan <dewi.morgan@intl.att.com>
  	return -EOPNOTSUPP;
 --- a/net/core/lwtunnel.c
 +++ b/net/core/lwtunnel.c
-@@ -378,6 +378,30 @@ drop:
+@@ -433,6 +433,30 @@ out:
  }
  EXPORT_SYMBOL_GPL(lwtunnel_xmit);
- 
+
 +__be32 lwtunnel_select_saddr(struct net *net, struct fib_result *res)
 +{
 +	const struct lwtunnel_encap_ops *ops;
@@ -141,13 +141,13 @@ Signed-off-by: Dewi Morgan <dewi.morgan@intl.att.com>
 +
  int lwtunnel_input(struct sk_buff *skb)
  {
- 	struct dst_entry *dst = skb_dst(skb);
+ 	const struct lwtunnel_encap_ops *ops;
 --- a/net/ipv4/fib_semantics.c
 +++ b/net/ipv4/fib_semantics.c
 @@ -1299,6 +1299,12 @@ __be32 fib_result_prefsrc(struct net *ne
  	if (res->fi->fib_prefsrc)
  		return res->fi->fib_prefsrc;
- 
+
 +	if (nhc->nhc_lwtstate) {
 +		 __be32 saddr = lwtunnel_select_saddr(net, res);
 +		if (saddr)
@@ -156,4 +156,4 @@ Signed-off-by: Dewi Morgan <dewi.morgan@intl.att.com>
 +
  	if (nhc->nhc_family == AF_INET) {
  		struct fib_nh *nh;
- 
+

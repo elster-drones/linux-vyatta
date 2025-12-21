@@ -27,15 +27,6 @@ name = 'rt'
 [[featureset.flavour]]
 name = 'amd64'
 
-[[featureset]]
-name = 'vyatta'
-# Vyatta networking focused kernel
-[[featureset.flavour]]
-name = 'amd64'
-[featureset.flavour.description]
-hardware = 'Vyatta/DANOS networking'
-hardware_long = 'Vyatta/DANOS network operating system'
-
 [build]
 enable_signed = true
 enable_vdso = true

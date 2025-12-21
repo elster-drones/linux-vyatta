@@ -1,5 +1,5 @@
 Netlink messages for multicast HW addr programming
-    
+
 Add RTM_NEWADDR and RTM_DELADDR netlink messages to indicate
 interest in specific multicast hardware addresses. These messages
 are sent when addressed are added or deleted from the appropriate
@@ -14,16 +14,16 @@ Signed-off-by: Patrick Ruddy <pruddy@vyatta.att-mail.com>
 +++ b/net/core/dev_addr_lists.c
 @@ -8,6 +8,7 @@
   */
- 
+
  #include <linux/netdevice.h>
 +#include <net/netlink.h>
  #include <linux/rtnetlink.h>
  #include <linux/export.h>
  #include <linux/list.h>
-@@ -766,6 +767,62 @@ out:
+@@ -858,6 +859,62 @@ out:
  }
  EXPORT_SYMBOL(dev_mc_add_excl);
- 
+
 +static int fill_addr(struct sk_buff *skb, struct net_device *dev,
 +		     const unsigned char *addr, int type)
 +{
@@ -83,10 +83,10 @@ Signed-off-by: Patrick Ruddy <pruddy@vyatta.att-mail.com>
  static int __dev_mc_add(struct net_device *dev, const unsigned char *addr,
  			bool global)
  {
-@@ -774,8 +831,10 @@ static int __dev_mc_add(struct net_devic
- 	netif_addr_lock_bh(dev);
+@@ -867,8 +924,10 @@ static int __dev_mc_add(struct net_devic
  	err = __hw_addr_add_ex(&dev->mc, addr, dev->addr_len,
- 			       NETDEV_HW_ADDR_T_MULTICAST, global, false, 0);
+ 			       NETDEV_HW_ADDR_T_MULTICAST, global, false,
+ 			       0, false);
 -	if (!err)
 +	if (!err) {
  		__dev_set_rx_mode(dev);
@@ -95,7 +95,7 @@ Signed-off-by: Patrick Ruddy <pruddy@vyatta.att-mail.com>
  	netif_addr_unlock_bh(dev);
  	return err;
  }
-@@ -814,8 +873,10 @@ static int __dev_mc_del(struct net_devic
+@@ -907,8 +966,10 @@ static int __dev_mc_del(struct net_devic
  	netif_addr_lock_bh(dev);
  	err = __hw_addr_del_ex(&dev->mc, addr, dev->addr_len,
  			       NETDEV_HW_ADDR_T_MULTICAST, global, false);

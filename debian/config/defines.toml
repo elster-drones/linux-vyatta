@@ -96,7 +96,7 @@ enable = true
 
 [[featureset]]
 name = 'vyatta'
-enable = true
+enable = false
   [featureset.description]
   parts = ['vyatta']
   [featureset.description.long]
