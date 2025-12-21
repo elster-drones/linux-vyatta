@@ -1,3 +1,4 @@
+# Only build amd64 flavour to reduce disk usage
 [[flavour]]
 name = 'amd64'
 [flavour.defs]
@@ -8,24 +9,16 @@ hardware_long = 'PCs with AMD64, Intel 64 or VIA Nano processors'
 [flavour.packages]
 installer = true
 
-[[flavour]]
-name = 'cloud-amd64'
-[flavour.build]
-config = ['config.cloud']
-[flavour.defs]
-is_quick = true
-[flavour.description]
-hardware = 'x86-64 cloud'
-hardware_long = 'cloud platforms including Amazon EC2, Microsoft Azure, and Google Compute Engine'
+# Disabled cloud-amd64 and rt to reduce disk usage during build
+# [[flavour]]
+# name = 'cloud-amd64'
 
 [[featureset]]
 name = 'none'
 
-[[featureset]]
-name = 'rt'
-# Override available flavours in rt featureset
-[[featureset.flavour]]
-name = 'amd64'
+# Disabled RT featureset to reduce disk usage
+# [[featureset]]
+# name = 'rt'
 
 [build]
 enable_signed = true
