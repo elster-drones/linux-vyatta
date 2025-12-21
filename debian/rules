@@ -1,5 +1,8 @@
 #!/usr/bin/make -f
 
+# Skip documentation build (Sphinx crashes in OBS environment)
+export DEB_BUILD_PROFILES += nodoc
+
 include /usr/share/dpkg/architecture.mk
 include /usr/share/dpkg/pkg-info.mk
 
