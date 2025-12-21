@@ -1,4 +1,4 @@
-debian/gitignore.patch
+# debian/gitignore.patch - Not needed for full source repo
 
 # Disable features broken by exclusion of upstream files
 debian/dfsg/arch-powerpc-platforms-8xx-ucode-disable.patch
