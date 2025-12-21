@@ -1,0 +1,48 @@
+# Vyatta patches for 6.12.x kernel
+# TCP-AO patches REMOVED - now upstream in 6.7+
+# IPMI revert patch REMOVED - conflicts with 6.12 changes
+# mpls/0006 TTL fix REMOVED - needs API update (dst_rtable)
+
+# Core networking patches (apply cleanly)
+team_set_IFF_SLAVE_on_team_ports.patch
+ipv6-interface-route-ecmp.patch
+
+# MPLS patches
+mpls/0005-mpls-differentiate-implicit-null-and-unlabeled-neigh.patch
+mpls/0007-mpls-update-pmtu-when-too-big.patch
+mpls/0008-mpls-lo-saddr.patch
+mpls/mpls-ipv6-lo-encap.patch
+mpls/mpls-ipv6-qualify-ecmp-lo.patch
+
+# Multicast patches
+mcast-ipv6-bridge-receive-link-local-packets.patch
+mcast-hw-address-netlink-messages.patch
+mcast-pim-reg-tunnel-bind-master.patch
+
+# TUN interface patches
+tun-add-ioctl-to-set-permanent-hardware-address.patch
+tun-intf-remove-eth-hdr-if-pi-is-teb.patch
+
+# Netfilter bypass
+netfilter-target-bypass-uapi.patch
+netfilter-target-bypass.patch
+
+# Link filtering and stats
+0003-linkfilter-patch.patch
+netdevice-stats-override.patch
+
+# GRE and ACPI workarounds
+gre-sysctl-no-encap.patch
+acpi-hang-workaround.patch
+
+# TODO: Patches that need manual regeneration for 6.12
+# 0151-net-sysfs-expose-operstate-up-transition-count.patch (operstate monitoring)
+# mpls/mpls-socket.patch (MPLS socket)
+# mpls/0006-mpls-fix-incorrect-decrement-of-ttl-on-encap-using-l.patch (needs dst_rtable API)
+# tun-fake-ethtool.patch (TUN ethtool masquerade)
+# 0075-tun-intf-pass-meta-data-between-user-and-kernel-spac.patch (TUN metadata)
+# 0132-Add-SIOCSETSGCNT-ioctl-for-external-multicast-stats.patch (multicast stats ioctl)
+# vlan-id-link-change.patch (VLAN)
+# vlan_proto.patch (VLAN proto)
+# uverbs-allow-unsafe-file-access.patch (RDMA)
+# act_mirred-dont-pull-mac.patch (tc mirred)
