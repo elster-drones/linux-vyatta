@@ -13,17 +13,9 @@ SHELL    := sh -e
 
 include debian/rules.defs
 
-# Limit parallel jobs to 2 to avoid GCC crashes from OBS memory exhaustion
-ifneq (,$(filter parallel=%,$(DEB_BUILD_OPTIONS)))
-  DEBIAN_KERNEL_JOBS := $(subst parallel=,,$(filter parallel=%,$(DEB_BUILD_OPTIONS)))
-  # Cap at 2 jobs to prevent OOM
-  ifeq ($(shell test $(DEBIAN_KERNEL_JOBS) -gt 2 && echo yes),yes)
-    DEBIAN_KERNEL_JOBS := 2
-  endif
-endif
-ifdef DEBIAN_KERNEL_JOBS
-  MAKEFLAGS += -j$(DEBIAN_KERNEL_JOBS)
-endif
+# Force single-threaded compilation to avoid GCC crashes from OBS memory exhaustion
+DEBIAN_KERNEL_JOBS := 1
+MAKEFLAGS += -j1
 
 # dpkg-buildpackage passes the -s option if DEB_BUILD_OPTIONS contains
 # terse, but that triggers Kbuild to turn off progress messages
