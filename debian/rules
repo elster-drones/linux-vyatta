@@ -13,9 +13,9 @@ SHELL    := sh -e
 
 include debian/rules.defs
 
-# Force single-threaded compilation to avoid GCC crashes from OBS memory exhaustion
-DEBIAN_KERNEL_JOBS := 1
-MAKEFLAGS += -j1
+# Set parallel jobs for kernel build
+DEBIAN_KERNEL_JOBS := 8
+MAKEFLAGS += -j8
 
 # dpkg-buildpackage passes the -s option if DEB_BUILD_OPTIONS contains
 # terse, but that triggers Kbuild to turn off progress messages
