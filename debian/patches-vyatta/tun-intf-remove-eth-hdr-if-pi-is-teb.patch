@@ -11,7 +11,7 @@ Signed-off-by: Mandeep Rohilla <mrohilla@vyatta.att-mail.com>
 
 --- a/drivers/net/tun.c
 +++ b/drivers/net/tun.c
-@@ -1321,8 +1321,13 @@ static ssize_t tun_get_user(struct tun_s
+@@ -1932,8 +1932,13 @@ static ssize_t tun_get_user(struct tun_s
  			}
  		}
  

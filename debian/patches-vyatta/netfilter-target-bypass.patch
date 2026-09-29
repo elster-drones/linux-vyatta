@@ -8,12 +8,12 @@ Signed-off-by: Paul Atkins <patkins@vyatta.att-mail.com>
 ---
  net/netfilter/Kconfig     |    9 ++
  net/netfilter/Makefile    |    1 
- net/netfilter/xt_BYPASS.c |  159 ++++++++++++++++++++++++++++++++++++++++++++++
- 3 files changed, 169 insertions(+)
+ net/netfilter/xt_BYPASS.c |  170 ++++++++++++++++++++++++++++++++++++++++++++++
+ 3 files changed, 180 insertions(+)
 
 --- a/net/netfilter/Kconfig
 +++ b/net/netfilter/Kconfig
-@@ -765,6 +765,15 @@ config NETFILTER_XT_TARGET_AUDIT
+@@ -816,6 +816,15 @@ config NETFILTER_XT_TARGET_AUDIT
  
  	  To compileit as a module, choose M here. If unsure, say N.
  
@@ -28,10 +28,10 @@ Signed-off-by: Paul Atkins <patkins@vyatta.att-mail.com>
 +
  config NETFILTER_XT_TARGET_CHECKSUM
  	tristate "CHECKSUM target support"
- 	depends on IP_NF_MANGLE || IP6_NF_MANGLE
+ 	depends on IP_NF_MANGLE || IP6_NF_MANGLE || NFT_COMPAT
 --- a/net/netfilter/Makefile
 +++ b/net/netfilter/Makefile
-@@ -135,6 +135,7 @@ obj-$(CONFIG_NETFILTER_XT_NAT) += xt_nat
+@@ -163,6 +163,7 @@ obj-$(CONFIG_NETFILTER_XT_NAT) += xt_nat
  
  # targets
  obj-$(CONFIG_NETFILTER_XT_TARGET_AUDIT) += xt_AUDIT.o

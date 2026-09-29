@@ -5,7 +5,7 @@
 
 --- a/drivers/net/tun.c
 +++ b/drivers/net/tun.c
-@@ -118,7 +118,7 @@ do {								\
+@@ -100,7 +100,7 @@ static void tun_default_link_ksettings(s
  #define TUN_VNET_BE     0x40000000
  
  #define TUN_FEATURES (IFF_NO_PI | IFF_ONE_QUEUE | IFF_VNET_HDR | \
@@ -14,7 +14,7 @@
  
  #define GOODCOPY_LEN 128
  
-@@ -1790,6 +1790,8 @@ static ssize_t tun_get_user(struct tun_s
+@@ -1799,6 +1799,8 @@ static ssize_t tun_get_user(struct tun_s
  	bool zerocopy = false;
  	int err;
  	u32 rxhash = 0;
@@ -22,8 +22,8 @@
 +	struct net_device *dev = tun->dev;
  	int skb_xdp = 1;
  	bool frags = tun_napi_frags_enabled(tfile);
- 
-@@ -1821,6 +1823,15 @@ static ssize_t tun_get_user(struct tun_s
+ 	enum skb_drop_reason drop_reason = SKB_DROP_REASON_NOT_SPECIFIED;
+@@ -1831,6 +1833,15 @@ static ssize_t tun_get_user(struct tun_s
  		iov_iter_advance(from, vnet_hdr_sz - sizeof(gso));
  	}
  
@@ -39,8 +39,8 @@
  	if ((tun->flags & TUN_TYPE_MASK) == IFF_TAP) {
  		align += NET_IP_ALIGN;
  		if (unlikely(len < ETH_HLEN ||
-@@ -1918,6 +1929,14 @@ drop:
- 		return -EINVAL;
+@@ -1914,6 +1925,14 @@ static ssize_t tun_get_user(struct tun_s
+ 		goto free_skb;
  	}
  
 +	if (meta.flags & TUN_META_FLAG_IIF) {
@@ -54,7 +54,7 @@
  	switch (tun->flags & TUN_TYPE_MASK) {
  	case IFF_TUN:
  		if (tun->flags & IFF_NO_PI) {
-@@ -1938,13 +1957,12 @@ drop:
+@@ -1933,13 +1952,12 @@ static ssize_t tun_get_user(struct tun_s
  		}
  
  		if (pi.proto == htons(ETH_P_TEB)) {
@@ -70,8 +70,8 @@
  		break;
  	case IFF_TAP:
  		if (frags && !pskb_may_pull(skb, ETH_HLEN)) {
-@@ -1965,6 +1983,9 @@ drop:
- 		uarg->callback(uarg, false);
+@@ -1959,6 +1977,9 @@ static ssize_t tun_get_user(struct tun_s
+ 		uarg->ops->complete(NULL, uarg, false);
  	}
  
 +	if (meta.flags & TUN_META_FLAG_MARK)
@@ -80,7 +80,7 @@
  	skb_reset_network_header(skb);
  	skb_probe_transport_header(skb);
  	skb_record_rx_queue(skb, tfile->queue_index);
-@@ -2175,6 +2196,20 @@ static ssize_t tun_put_user(struct tun_s
+@@ -2195,6 +2216,20 @@ static ssize_t tun_put_user(struct tun_s
  		iov_iter_advance(iter, vnet_hdr_sz - sizeof(gso));
  	}
  
@@ -113,16 +113,16 @@
  /* Ioctl defines */
  #define TUNSETNOCSUM  _IOW('T', 200, int) 
  #define TUNSETDEBUG   _IOW('T', 201, int) 
-@@ -69,6 +72,7 @@
- #define IFF_TAP		0x0002
- #define IFF_NAPI	0x0010
+@@ -71,6 +74,7 @@
  #define IFF_NAPI_FRAGS	0x0020
+ /* Used in TUNSETIFF to bring up tun/tap without carrier */
+ #define IFF_NO_CARRIER	0x0040
 +#define IFF_META_HDR	0x0080	/* Vyatta */
  #define IFF_NO_PI	0x1000
  /* This flag has no real effect */
  #define IFF_ONE_QUEUE	0x2000
-@@ -113,4 +117,17 @@ struct tun_filter {
- 	__u8   addr[0][ETH_ALEN];
+@@ -117,4 +121,17 @@ struct tun_filter {
+ 	__u8   addr[][ETH_ALEN];
  };
  
 +/* Prepended to the packet when the flag TUN_META is set

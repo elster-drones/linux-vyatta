@@ -6,13 +6,13 @@ address on tun interfaces.
 Signed-off-by: "Charles (Chas) Williams" <ciwillia@vyatta.att-mail.com>
 
 ---
- drivers/net/tun.c           |   12 +++++++++++-
+ drivers/net/tun.c           |    8 +++++++-
  include/uapi/linux/if_tun.h |    2 ++
- 2 files changed, 13 insertions(+), 1 deletion(-)
+ 2 files changed, 9 insertions(+), 1 deletion(-)
 
 --- a/drivers/net/tun.c
 +++ b/drivers/net/tun.c
-@@ -3081,7 +3081,7 @@ static long __tun_chr_ioctl(struct file
+@@ -3136,7 +3136,7 @@ static long __tun_chr_ioctl(struct file
  	int ret;
  	bool do_notify = false;
  
@@ -21,7 +21,7 @@ Signed-off-by: "Charles (Chas) Williams" <ciwillia@vyatta.att-mail.com>
  	    (_IOC_TYPE(cmd) == SOCK_IOC_TYPE && cmd != SIOCGSKNS)) {
  		if (copy_from_user(&ifr, argp, ifreq_len))
  			return -EFAULT;
-@@ -3372,6 +3372,12 @@ static long __tun_chr_ioctl(struct file
+@@ -3437,6 +3437,12 @@ static long __tun_chr_ioctl(struct file
  		ret = open_related_ns(&net->ns, get_net_ns);
  		break;
  

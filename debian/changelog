@@ -1,3 +1,18 @@
+linux (6.14.0-1elster2) vyatta; urgency=medium
+
+  * Re-enable the Vyatta slow-path patches, rebased onto 6.14:
+    - tun: pass meta data (mark, iif) between user and kernel space
+      (IFF_META_HDR, struct tun_meta)
+    - tun: ethtool info masquerade, permanent hw address ioctl, strip the
+      ethernet header of TEB payloads on tun devices
+    - gre: net.ipv4.gre.gre_output_if sysctl to hand GRE to the dataplane
+    - netfilter: BYPASS target (xt_BYPASS) and its uapi header
+    - mpls: RTA_MPLS_PAYLOAD route attribute (implicit-null vs unlabeled)
+  * Apply the featureset patch series again (debian/rules.real).
+  * vyatta: enable CONFIG_NETFILTER_XT_TARGET_BYPASS.
+
+ -- Erik Ziegenbalg <erik@ezthinking.org>  Tue, 29 Sep 2026 01:28:08 +0000
+
 linux (6.14.0-1elster1) vyatta; urgency=medium
 
   * Elster OS Release

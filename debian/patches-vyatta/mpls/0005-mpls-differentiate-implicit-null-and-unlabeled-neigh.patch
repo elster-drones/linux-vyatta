@@ -23,9 +23,9 @@ Signed-off-by: Robert Shearman <rshearma@vyatta.att-mail.com>
 ---
  include/uapi/linux/mpls.h      |   30 ++++++++
  include/uapi/linux/rtnetlink.h |    1 
- net/mpls/af_mpls.c             |  148 +++++++++++++++++++++++++++++++++++++----
- net/mpls/internal.h            |    4 -
- 4 files changed, 168 insertions(+), 15 deletions(-)
+ net/mpls/af_mpls.c             |  145 +++++++++++++++++++++++++++++++++++++----
+ net/mpls/internal.h            |    3 
+ 4 files changed, 166 insertions(+), 13 deletions(-)
 
 --- a/include/uapi/linux/mpls.h
 +++ b/include/uapi/linux/mpls.h
@@ -66,17 +66,17 @@ Signed-off-by: Robert Shearman <rshearma@vyatta.att-mail.com>
  #endif /* _UAPI_MPLS_H */
 --- a/include/uapi/linux/rtnetlink.h
 +++ b/include/uapi/linux/rtnetlink.h
-@@ -367,6 +367,7 @@ enum rtattr_type_t {
- 	RTA_SPORT,
+@@ -398,6 +398,7 @@ enum rtattr_type_t {
  	RTA_DPORT,
  	RTA_NH_ID,
+ 	RTA_FLOWLABEL,
 +	RTA_MPLS_PAYLOAD = (RTA_PAD + 9),
  	__RTA_MAX
  };
  
 --- a/net/mpls/af_mpls.c
 +++ b/net/mpls/af_mpls.c
-@@ -237,26 +237,39 @@ static struct mpls_nh *mpls_select_multi
+@@ -238,26 +238,39 @@ static const struct mpls_nh *mpls_select
  	int nh_index = 0;
  	int n = 0;
  	u8 alive;
@@ -119,7 +119,7 @@ Signed-off-by: Robert Shearman <rshearma@vyatta.att-mail.com>
  		if (n == nh_index)
  			return nh;
  		n++;
-@@ -269,7 +282,7 @@ out:
+@@ -270,7 +283,7 @@ out:
  static bool mpls_egress(struct net *net, struct mpls_route *rt,
  			struct sk_buff *skb, struct mpls_entry_decoded dec)
  {
@@ -128,7 +128,7 @@ Signed-off-by: Robert Shearman <rshearma@vyatta.att-mail.com>
  	bool success = false;
  
  	/* The IPv4 code below accesses through the IPv4 header
-@@ -286,11 +299,11 @@ static bool mpls_egress(struct net *net,
+@@ -287,11 +300,11 @@ static bool mpls_egress(struct net *net,
  		return false;
  
  	payload_type = rt->rt_payload_type;
@@ -142,7 +142,7 @@ Signed-off-by: Robert Shearman <rshearma@vyatta.att-mail.com>
  		struct iphdr *hdr4 = ip_hdr(skb);
  		u8 new_ttl;
  		skb->protocol = htons(ETH_P_IP);
-@@ -313,7 +326,7 @@ static bool mpls_egress(struct net *net,
+@@ -314,7 +327,7 @@ static bool mpls_egress(struct net *net,
  		success = true;
  		break;
  	}
@@ -151,7 +151,7 @@ Signed-off-by: Robert Shearman <rshearma@vyatta.att-mail.com>
  		struct ipv6hdr *hdr6 = ipv6_hdr(skb);
  		skb->protocol = htons(ETH_P_IPV6);
  
-@@ -330,7 +343,7 @@ static bool mpls_egress(struct net *net,
+@@ -331,7 +344,7 @@ static bool mpls_egress(struct net *net,
  		success = true;
  		break;
  	}
@@ -160,7 +160,7 @@ Signed-off-by: Robert Shearman <rshearma@vyatta.att-mail.com>
  		/* Should have decided which protocol it is by now */
  		break;
  	}
-@@ -483,6 +496,7 @@ static const struct nla_policy rtm_mpls_
+@@ -486,6 +499,7 @@ static const struct nla_policy rtm_mpls_
  	[RTA_DST]		= { .type = NLA_U32 },
  	[RTA_OIF]		= { .type = NLA_U32 },
  	[RTA_TTL_PROPAGATE]	= { .type = NLA_U8 },
@@ -168,7 +168,7 @@ Signed-off-by: Robert Shearman <rshearma@vyatta.att-mail.com>
  };
  
  struct mpls_route_config {
-@@ -497,6 +511,7 @@ struct mpls_route_config {
+@@ -500,6 +514,7 @@ struct mpls_route_config {
  	u32			rc_output_label[MAX_NEW_LABELS];
  	u32			rc_nlflags;
  	enum mpls_payload_type	rc_payload_type;
@@ -176,7 +176,7 @@ Signed-off-by: Robert Shearman <rshearma@vyatta.att-mail.com>
  	struct nl_info		rc_nlinfo;
  	struct rtnexthop	*rc_mp;
  	int			rc_mp_len;
-@@ -523,6 +538,7 @@ static struct mpls_route *mpls_rt_alloc(
+@@ -526,6 +541,7 @@ static struct mpls_route *mpls_rt_alloc(
  	rt->rt_nhn_alive = num_nh;
  	rt->rt_nh_size = nh_size;
  	rt->rt_via_offset = MPLS_NH_VIA_OFF(max_labels);
@@ -184,7 +184,7 @@ Signed-off-by: Robert Shearman <rshearma@vyatta.att-mail.com>
  
  	return rt;
  }
-@@ -781,12 +797,16 @@ static int mpls_nh_build_from_cfg(struct
+@@ -784,12 +800,16 @@ static int mpls_nh_build_from_cfg(struct
  	memcpy(__mpls_nh_via(rt, nh), cfg->rc_via, cfg->rc_via_alen);
  	nh->nh_via_alen = cfg->rc_via_alen;
  
@@ -201,7 +201,7 @@ Signed-off-by: Robert Shearman <rshearma@vyatta.att-mail.com>
  
  	return 0;
  
-@@ -797,6 +817,7 @@ errout:
+@@ -800,6 +820,7 @@ errout:
  static int mpls_nh_build(struct net *net, struct mpls_route *rt,
  			 struct mpls_nh *nh, int oif, struct nlattr *via,
  			 struct nlattr *newdst, u8 max_labels,
@@ -209,7 +209,7 @@ Signed-off-by: Robert Shearman <rshearma@vyatta.att-mail.com>
  			 struct netlink_ext_ack *extack)
  {
  	int err = -ENOMEM;
-@@ -820,6 +841,8 @@ static int mpls_nh_build(struct net *net
+@@ -823,6 +844,8 @@ static int mpls_nh_build(struct net *net
  		nh->nh_via_table = MPLS_NEIGH_TABLE_UNSPEC;
  	}
  
@@ -218,7 +218,7 @@ Signed-off-by: Robert Shearman <rshearma@vyatta.att-mail.com>
  	err = mpls_nh_assign_dev(net, rt, nh, oif);
  	if (err)
  		goto errout;
-@@ -884,8 +907,9 @@ static int mpls_nh_build_multi(struct mp
+@@ -887,8 +910,9 @@ static int mpls_nh_build_multi(struct mp
  			       struct netlink_ext_ack *extack)
  {
  	struct rtnexthop *rtnh = cfg->rc_mp;
@@ -229,7 +229,7 @@ Signed-off-by: Robert Shearman <rshearma@vyatta.att-mail.com>
  	int err = 0;
  	u8 nhs = 0;
  
-@@ -894,6 +918,7 @@ static int mpls_nh_build_multi(struct mp
+@@ -897,6 +921,7 @@ static int mpls_nh_build_multi(struct mp
  
  		nla_via = NULL;
  		nla_newdst = NULL;
@@ -237,7 +237,7 @@ Signed-off-by: Robert Shearman <rshearma@vyatta.att-mail.com>
  
  		err = -EINVAL;
  		if (!rtnh_ok(rtnh, remaining))
-@@ -911,16 +936,33 @@ static int mpls_nh_build_multi(struct mp
+@@ -914,16 +939,33 @@ static int mpls_nh_build_multi(struct mp
  
  			nla_via = nla_find(attrs, attrlen, RTA_VIA);
  			nla_newdst = nla_find(attrs, attrlen, RTA_NEWDST);
@@ -272,7 +272,7 @@ Signed-off-by: Robert Shearman <rshearma@vyatta.att-mail.com>
  
  		rtnh = rtnh_next(rtnh, &remaining);
  		nhs++;
-@@ -1894,6 +1936,38 @@ static int rtm_to_route_config(struct sk
+@@ -1913,6 +1955,38 @@ static int rtm_to_route_config(struct sk
  				MPLS_TTL_PROP_DISABLED;
  			break;
  		}
@@ -311,7 +311,7 @@ Signed-off-by: Robert Shearman <rshearma@vyatta.att-mail.com>
  		default:
  			NL_SET_ERR_MSG_ATTR(extack, nla, "Unknown attribute");
  			/* Unsupported attribute */
-@@ -1982,6 +2056,25 @@ static int mpls_dump_route(struct sk_buf
+@@ -2001,6 +2075,25 @@ static int mpls_dump_route(struct sk_buf
  			       ttl_propagate))
  			goto nla_put_failure;
  	}
@@ -337,7 +337,7 @@ Signed-off-by: Robert Shearman <rshearma@vyatta.att-mail.com>
  	if (rt->rt_nhn == 1) {
  		const struct mpls_nh *nh = rt->rt_nh;
  
-@@ -2039,6 +2132,18 @@ static int mpls_dump_route(struct sk_buf
+@@ -2058,6 +2151,18 @@ static int mpls_dump_route(struct sk_buf
  					nh->nh_via_alen))
  				goto nla_put_failure;
  
@@ -356,7 +356,7 @@ Signed-off-by: Robert Shearman <rshearma@vyatta.att-mail.com>
  			/* length of rtnetlink header + attributes */
  			rtnh->rtnh_len = nlmsg_get_pos(skb) - (void *)rtnh;
  		} endfor_nexthops(rt);
-@@ -2206,6 +2311,15 @@ static inline size_t lfib_nlmsg_size(str
+@@ -2223,6 +2328,15 @@ static inline size_t lfib_nlmsg_size(str
  		NLMSG_ALIGN(sizeof(struct rtmsg))
  		+ nla_total_size(4)			/* RTA_DST */
  		+ nla_total_size(1);			/* RTA_TTL_PROPAGATE */
@@ -372,7 +372,7 @@ Signed-off-by: Robert Shearman <rshearma@vyatta.att-mail.com>
  
  	if (rt->rt_nhn == 1) {
  		struct mpls_nh *nh = rt->rt_nh;
-@@ -2229,6 +2343,13 @@ static inline size_t lfib_nlmsg_size(str
+@@ -2246,6 +2360,13 @@ static inline size_t lfib_nlmsg_size(str
  				nhsize += nla_total_size(2 + nh->nh_via_alen);
  			if (nh->nh_labels)
  				nhsize += nla_total_size(nh->nh_labels * 4);
@@ -386,18 +386,18 @@ Signed-off-by: Robert Shearman <rshearma@vyatta.att-mail.com>
  		} endfor_nexthops(rt);
  		/* nested attribute */
  		payload += nla_total_size(nhsize);
-@@ -2508,7 +2629,7 @@ static int resize_platform_label_table(s
+@@ -2524,7 +2645,7 @@ static int resize_platform_label_table(s
  			goto nort0;
- 		RCU_INIT_POINTER(rt0->rt_nh->nh_dev, lo);
+ 		rt0->rt_nh->nh_dev = lo;
  		rt0->rt_protocol = RTPROT_KERNEL;
 -		rt0->rt_payload_type = MPT_IPV4;
 +		rt0->rt_payload_type = RTMPT_IPV4;
  		rt0->rt_ttl_propagate = MPLS_TTL_PROP_DEFAULT;
  		rt0->rt_nh->nh_via_table = NEIGH_LINK_TABLE;
  		rt0->rt_nh->nh_via_alen = lo->addr_len;
-@@ -2522,7 +2643,7 @@ static int resize_platform_label_table(s
+@@ -2538,7 +2659,7 @@ static int resize_platform_label_table(s
  			goto nort2;
- 		RCU_INIT_POINTER(rt2->rt_nh->nh_dev, lo);
+ 		rt2->rt_nh->nh_dev = lo;
  		rt2->rt_protocol = RTPROT_KERNEL;
 -		rt2->rt_payload_type = MPT_IPV6;
 +		rt2->rt_payload_type = RTMPT_IPV6;

@@ -8,7 +8,7 @@
 #team_set_IFF_SLAVE_on_team_ports.patch
 #0151-net-sysfs-expose-operstate-up-transition-count.patch
 #mcast-hw-address-netlink-messages.patch
-#mpls/0005-mpls-differentiate-implicit-null-and-unlabeled-neigh.patch
+mpls/0005-mpls-differentiate-implicit-null-and-unlabeled-neigh.patch
 #mpls/0006-mpls-fix-incorrect-decrement-of-ttl-on-encap-using-l.patch
 #mpls/0007-mpls-update-pmtu-when-too-big.patch
 #mpls/0008-mpls-lo-saddr.patch
@@ -20,11 +20,11 @@
 ## Patches that are Vyatta specific
 #0003-linkfilter-patch.patch
 #netdevice-stats-override.patch
-#tun-fake-ethtool.patch
-#tun-add-ioctl-to-set-permanent-hardware-address.patch
-#tun-intf-remove-eth-hdr-if-pi-is-teb.patch
-#0075-tun-intf-pass-meta-data-between-user-and-kernel-spac.patch
-#gre-sysctl-no-encap.patch
+tun-fake-ethtool.patch
+tun-add-ioctl-to-set-permanent-hardware-address.patch
+tun-intf-remove-eth-hdr-if-pi-is-teb.patch
+0075-tun-intf-pass-meta-data-between-user-and-kernel-spac.patch
+gre-sysctl-no-encap.patch
 #0001-Revert-ipmi_ssif-avoid-registering-duplicate-ssif-in.patch
 #
 #0132-Add-SIOCSETSGCNT-ioctl-for-external-multicast-stats.patch
@@ -45,7 +45,7 @@
 ## FIPS
 #
 ## Work in Progess
-#netfilter-target-bypass-uapi.patch
-#netfilter-target-bypass.patch
+netfilter-target-bypass-uapi.patch
+netfilter-target-bypass.patch
 #act_mirred-dont-pull-mac.patch
 #mpls/mpls-ipv6-qualify-ecmp-lo.patch

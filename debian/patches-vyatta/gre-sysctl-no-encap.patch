@@ -1,10 +1,10 @@
 ---
- net/ipv4/ip_gre.c |  147 ++++++++++++++++++++++++++++++++++++++++++++++++++++++
- 1 file changed, 147 insertions(+)
+ net/ipv4/ip_gre.c |  144 ++++++++++++++++++++++++++++++++++++++++++++++++++++++
+ 1 file changed, 144 insertions(+)
 
 --- a/net/ipv4/ip_gre.c
 +++ b/net/ipv4/ip_gre.c
-@@ -32,6 +32,8 @@
+@@ -27,6 +27,8 @@
  #include <linux/netfilter_ipv4.h>
  #include <linux/etherdevice.h>
  #include <linux/if_ether.h>
@@ -13,7 +13,7 @@
  
  #include <net/sock.h>
  #include <net/ip.h>
-@@ -111,6 +113,15 @@ static bool log_ecn_error = true;
+@@ -107,6 +109,15 @@ static bool log_ecn_error = true;
  module_param(log_ecn_error, bool, 0644);
  MODULE_PARM_DESC(log_ecn_error, "Log packets received with corrupted ECN");
  
@@ -27,9 +27,9 @@
 +};
 +
  static struct rtnl_link_ops ipgre_link_ops __read_mostly;
- static int ipgre_tunnel_init(struct net_device *dev);
- static void erspan_build_header(struct sk_buff *skb,
-@@ -671,6 +682,40 @@ static int gre_fill_metadata_dst(struct
+ static const struct header_ops ipgre_header_ops;
+ 
+@@ -642,6 +653,40 @@ static int gre_fill_metadata_dst(struct
  	return 0;
  }
  
@@ -70,7 +70,7 @@
  static netdev_tx_t ipgre_xmit(struct sk_buff *skb,
  			      struct net_device *dev)
  {
-@@ -680,6 +725,9 @@ static netdev_tx_t ipgre_xmit(struct sk_
+@@ -651,6 +696,9 @@ static netdev_tx_t ipgre_xmit(struct sk_
  	if (!pskb_inet_may_pull(skb))
  		goto free_skb;
  
@@ -80,17 +80,17 @@
  	if (tunnel->collect_md) {
  		gre_fb_xmit(skb, dev, skb->protocol);
  		return NETDEV_TX_OK;
-@@ -705,6 +753,9 @@ static netdev_tx_t ipgre_xmit(struct sk_
+@@ -681,6 +729,9 @@ static netdev_tx_t ipgre_xmit(struct sk_
  		tnl_params = &tunnel->parms.iph;
  	}
  
 +	if (gre_xmit_bypass(skb, dev, htons(ETH_P_TEB)))
 +		return NETDEV_TX_OK;
 +
- 	if (gre_handle_offloads(skb, !!(tunnel->parms.o_flags & TUNNEL_CSUM)))
+ 	if (gre_handle_offloads(skb, test_bit(IP_TUNNEL_CSUM_BIT,
+ 					      tunnel->parms.o_flags)))
  		goto free_skb;
- 
-@@ -920,6 +971,15 @@ static int ipgre_header(struct sk_buff *
+@@ -909,6 +960,15 @@ static int ipgre_header(struct sk_buff *
  static int ipgre_header_parse(const struct sk_buff *skb, unsigned char *haddr)
  {
  	const struct iphdr *iph = (const struct iphdr *) skb_mac_header(skb);
@@ -106,7 +106,7 @@
  	memcpy(haddr, &iph->saddr, 4);
  	return 4;
  }
-@@ -1681,6 +1741,86 @@ static struct pernet_operations erspan_n
+@@ -1774,6 +1834,83 @@ static struct pernet_operations erspan_n
  	.size = sizeof(struct ip_tunnel_net),
  };
  
@@ -137,8 +137,8 @@
 +	return NOTIFY_DONE;
 +}
 +
-+int gre_sysctl_proc_dostring(struct ctl_table *table, int write,
-+			     void __user *buffer, size_t *lenp, loff_t *ppos)
++static int gre_sysctl_proc_dostring(const struct ctl_table *table, int write,
++				    void *buffer, size_t *lenp, loff_t *ppos)
 +{
 +	int r;
 +
@@ -155,7 +155,7 @@
 +	return r;
 +}
 +
-+struct ctl_table gre_sysctl_table[] = {
++static struct ctl_table gre_sysctl_table[] = {
 +	{
 +		.procname	= "gre_output_if",
 +		.data		= &gre_devconf.o_ifname,
@@ -163,9 +163,6 @@
 +		.mode		= 0644,
 +		.proc_handler	= gre_sysctl_proc_dostring,
 +	},
-+	{
-+		/* sentinel */
-+	}
 +};
 +
 +static struct notifier_block gre_sysctl_notifier = {
@@ -193,7 +190,7 @@
  static int __init ipgre_init(void)
  {
  	int err;
-@@ -1717,8 +1857,14 @@ static int __init ipgre_init(void)
+@@ -1810,8 +1947,14 @@ static int __init ipgre_init(void)
  	if (err < 0)
  		goto erspan_link_failed;
  
@@ -208,7 +205,7 @@
  erspan_link_failed:
  	rtnl_link_unregister(&ipgre_tap_ops);
  tap_ops_failed:
-@@ -1736,6 +1882,7 @@ pnet_tap_failed:
+@@ -1829,6 +1972,7 @@ pnet_tap_failed:
  
  static void __exit ipgre_fini(void)
  {
