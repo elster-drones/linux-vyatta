@@ -1,3 +1,21 @@
+linux (6.14.0-1elster4) vyatta; urgency=medium
+
+  * Lock the kernel down under UEFI Secure Boot again, as the DANOS 5.4
+    kernel did. The 6.14 vyatta config was regenerated from the 4.19-era
+    one, whose CONFIG_LOCK_DOWN_KERNEL no longer exists, so the lockdown
+    LSM ended up disabled and overrode Debian's base config.
+    - Re-enable the Debian lockdown patches (efi_secure_boot flag, lock
+      down in Secure Boot mode, slram/phram, arm64 option), updated to
+      the versions in Debian 6.14.3-1~exp1 (refreshed, offsets only).
+    - vyatta: enable SECURITY_LOCKDOWN_LSM, SECURITY_LOCKDOWN_LSM_EARLY,
+      LOCK_DOWN_KERNEL_FORCE_NONE and LOCK_DOWN_IN_EFI_SECURE_BOOT: a
+      Secure Boot boot is locked down in integrity mode, other boots are
+      not locked down.
+    - vyatta: enable KEXEC_SIG and KEXEC_BZIMAGE_VERIFY_SIG as in DANOS,
+      so kexec_file_load cannot load an unsigned kernel while locked down.
+
+ -- Erik Ziegenbalg <erik@ezthinking.org>  Tue, 29 Sep 2026 14:54:28 +0000
+
 linux (6.14.0-1elster3) vyatta; urgency=medium
 
   * Re-enable and rebase onto 6.14 the build-system patches the packaging
