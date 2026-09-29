@@ -17,7 +17,7 @@ use of $(ARCH) needs to be moved after this.
 ---
 --- a/Makefile
 +++ b/Makefile
-@@ -363,31 +363,6 @@ include scripts/subarch.include
+@@ -405,36 +405,6 @@ include $(srctree)/scripts/subarch.inclu
  # Note: Some architectures assign CROSS_COMPILE in their arch/*/Makefile
  ARCH		?= $(SUBARCH)
  
@@ -41,15 +41,20 @@ use of $(ARCH) needs to be moved after this.
 -       SRCARCH := sparc
 -endif
 -
--# Additional ARCH settings for sh
--ifeq ($(ARCH),sh64)
--       SRCARCH := sh
+-# Additional ARCH settings for parisc
+-ifeq ($(ARCH),parisc64)
+-       SRCARCH := parisc
+-endif
+-
+-export cross_compiling :=
+-ifneq ($(SRCARCH),$(SUBARCH))
+-cross_compiling := 1
 -endif
 -
  KCONFIG_CONFIG	?= .config
  export KCONFIG_CONFIG
  
-@@ -442,6 +417,30 @@ CFLAGS_KERNEL	=
+@@ -555,6 +525,38 @@ RUSTFLAGS_KERNEL =
  AFLAGS_KERNEL	=
  LDFLAGS_vmlinux =
  
@@ -68,13 +73,21 @@ use of $(ARCH) needs to be moved after this.
 +endif
 +
 +# Additional ARCH settings for sparc
++ifeq ($(ARCH),sparc32)
++       SRCARCH := sparc
++endif
 +ifeq ($(ARCH),sparc64)
 +       SRCARCH := sparc
 +endif
 +
-+# Additional ARCH settings for sh
-+ifeq ($(ARCH),sh64)
-+       SRCARCH := sh
++# Additional ARCH settings for parisc
++ifeq ($(ARCH),parisc64)
++       SRCARCH := parisc
++endif
++
++export cross_compiling :=
++ifneq ($(SRCARCH),$(SUBARCH))
++cross_compiling := 1
 +endif
 +
  # Use USERINCLUDE when you must reference the UAPI directories only.

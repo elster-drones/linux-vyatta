@@ -1,3 +1,14 @@
+linux (6.14.0-1elster3) vyatta; urgency=medium
+
+  * Re-enable and rebase onto 6.14 the build-system patches the packaging
+    relies on: debian/kernelvariables.patch (KERNELRELEASE and ARCH from
+    .kernelvariables), debian/version.patch (LINUX_PACKAGE_ID) and
+    debian/uname-version-timestamp.patch. The kernel release is
+    6.14.0-trunk-vyatta-amd64 again instead of 6.14.0-rc4, so modules are
+    installed where the package and initramfs-tools look for them.
+
+ -- Erik Ziegenbalg <erik@ezthinking.org>  Tue, 29 Sep 2026 04:09:17 +0000
+
 linux (6.14.0-1elster2) vyatta; urgency=medium
 
   * Re-enable the Vyatta slow-path patches, rebased onto 6.14:
