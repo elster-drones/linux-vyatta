@@ -9,6 +9,7 @@ DATA = \
 	Kbuild.include \
 	Makefile.* \
 	mkversion \
+	module-common.c \
 	module-common.lds \
 	subarch.include
 
@@ -26,17 +27,18 @@ SCRIPTS =  \
 	makelst \
 	mksysmap \
 	mkuboot.sh \
+	modules-check.sh \
 	namespace.pl \
 	patch-kernel \
 	recordmcount.pl \
 	setlocalversion \
 	ver_linux
 
-#SUBDIRS = \
-#	basic \
-#	genksyms \
-#	kconfig \
-#	mod
+SUBDIRS = \
+	basic \
+	genksyms \
+	mod
+#	kconfig
 
 include $(top_rulesdir)/Makefile.inc
 

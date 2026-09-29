@@ -1,3 +1,17 @@
+linux (6.14.0-1elster5) vyatta; urgency=medium
+
+  * Make out-of-tree modules build against linux-headers again (6.14):
+    - linux-kbuild: build and ship the kbuild host programs again
+      (scripts/basic/fixdep, scripts/mod/modpost, scripts/genksyms/genksyms)
+      and scripts/modules-check.sh and scripts/module-common.c; take the
+      6.14 rules.d Makefiles for them from Debian 6.14.3-1~exp1.
+    - linux-headers: set KBUILD_OUTPUT in the flavour Makefile, which kbuild
+      needs for M= builds since 6.13.
+    - Re-enable debian/kbuild-look-for-module.lds-under-arch-directory-too.patch
+      (Debian 6.14 version), so M= builds find arch/x86/module.lds.
+
+ -- Erik Ziegenbalg <erik@ezthinking.org>  Tue, 29 Sep 2026 17:21:05 +0000
+
 linux (6.14.0-1elster4) vyatta; urgency=medium
 
   * Lock the kernel down under UEFI Secure Boot again, as the DANOS 5.4

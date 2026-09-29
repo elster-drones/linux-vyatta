@@ -7,10 +7,12 @@ SHELL = /bin/sh -e
 
 CC = $(CROSS_COMPILE)gcc
 CXX = $(CROSS_COMPILE)g++
+PKG_CONFIG = $(CROSS_COMPILE)pkg-config
 CFLAGS := $(shell dpkg-buildflags --get CFLAGS) -Wall
 CPPFLAGS := $(shell dpkg-buildflags --get CPPFLAGS) \
 	-I$(top_srcdir)/$(OUTDIR) \
 	-I$(top_srcdir)/debian/build/build-tools/$(OUTDIR) \
+	-I$(top_srcdir)/scripts/include \
 	-isystem $(top_srcdir)/debian/build/build-tools/include
 CXXFLAGS := $(shell dpkg-buildflags --get CXXFLAGS) -Wall
 LDFLAGS := $(shell dpkg-buildflags --get LDFLAGS)
