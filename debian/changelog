@@ -1,3 +1,20 @@
+linux (6.14.0-1elster6) vyatta; urgency=medium
+
+  * Re-enable the Debian hardening patches that DANOS 2105's kernel carried
+    and 3417debce03 switched off with the rest of debian/patches, updated to
+    the versions in Debian 6.14.3-1~exp1 (refreshed, offsets only):
+    - debian/fs-enable-link-security-restrictions-by-default.patch:
+      fs.protected_symlinks and fs.protected_hardlinks default to 1.
+    - features/all/security-perf-allow-further-restriction-of-perf_event_open.patch:
+      kernel.perf_event_paranoid=3 (SECURITY_PERF_EVENTS_RESTRICT, already
+      =y in debian/config/config) denies perf_event_open to unprivileged
+      users by default.
+    - bugfix/all/module-disable-matching-missing-version-crc.patch: refuse a
+      module that has symbol versions but none for a symbol it imports,
+      instead of loading it with a warning.
+
+ -- Erik Ziegenbalg <erik@ezthinking.org>  Wed, 30 Sep 2026 07:40:17 +0000
+
 linux (6.14.0-1elster5) vyatta; urgency=medium
 
   * Make out-of-tree modules build against linux-headers again (6.14):

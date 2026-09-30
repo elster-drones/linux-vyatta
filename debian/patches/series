@@ -47,13 +47,13 @@ debian/kbuild-look-for-module.lds-under-arch-directory-too.patch
 #debian/decnet-Disable-auto-loading-as-mitigation-against-lo.patch
 #debian/dccp-disable-auto-loading-as-mitigation-against-local-exploits.patch
 #debian/hamradio-disable-auto-loading-as-mitigation-against-local-exploits.patch
-#debian/fs-enable-link-security-restrictions-by-default.patch
+debian/fs-enable-link-security-restrictions-by-default.patch
 #
 ## Set various features runtime-disabled by default
 #debian/sched-autogroup-disabled.patch
 #debian/yama-disable-by-default.patch
 #debian/add-sysctl-to-disallow-unprivileged-CLONE_NEWUSER-by-default.patch
-#features/all/security-perf-allow-further-restriction-of-perf_event_open.patch
+features/all/security-perf-allow-further-restriction-of-perf_event_open.patch
 #features/x86/intel-iommu-add-option-to-exclude-integrated-gpu-only.patch
 #features/x86/intel-iommu-add-kconfig-option-to-exclude-igpu-by-default.patch
 #
@@ -116,7 +116,7 @@ features/all/lockdown/arm64-add-kernel-config-option-to-lock-down-when.patch
 #bugfix/all/vfs-move-cap_convert_nscap-call-into-vfs_setxattr.patch
 #
 ## Fix exported symbol versions
-#bugfix/all/module-disable-matching-missing-version-crc.patch
+bugfix/all/module-disable-matching-missing-version-crc.patch
 #
 ## Tools bug fixes
 #bugfix/all/usbip-document-tcp-wrappers.patch
