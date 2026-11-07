@@ -1,3 +1,11 @@
+linux (6.18.62-1elster3+git20261107.91b568927) vyatta; urgency=high
+
+  * Restore multicast hardware-address netlink notifications (91b568927).
+    Keep dataplane receive filters synchronized with Linux memberships,
+    including OSPFv2, OSPFv3 and IPv6 neighbor discovery.
+
+ -- Erik Ziegenbalg <erikziege@gmail.com>  Sat, 07 Nov 2026 04:35:00 +0000
+
 linux (6.18.62-1elster2) vyatta; urgency=medium
 
   * Declare Linux UAPI headers needed by native host-tool compilation.
