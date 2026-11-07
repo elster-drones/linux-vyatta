@@ -683,6 +683,9 @@ static int qcom_pmic_typec_port_start(struct pmic_typec *tcpm,
 		enable_irq(pmic_typec_port->irq_data[i].irq);
 
 done:
+	if (ret)
+		disable_delayed_work_sync(&pmic_typec_port->cc_debounce_dwork);
+
 	return ret;
 }
 
@@ -693,6 +696,8 @@ static void qcom_pmic_typec_port_stop(struct pmic_typec *tcpm)
 
 	for (i = 0; i < pmic_typec_port->nr_irqs; i++)
 		disable_irq(pmic_typec_port->irq_data[i].irq);
+
+	disable_delayed_work_sync(&pmic_typec_port->cc_debounce_dwork);
 }
 
 int qcom_pmic_typec_port_probe(struct platform_device *pdev,
@@ -713,7 +718,7 @@ int qcom_pmic_typec_port_probe(struct platform_device *pdev,
 	if (!res->nr_irqs || res->nr_irqs > PMIC_TYPEC_MAX_IRQS)
 		return -EINVAL;
 
-	irq_data = devm_kzalloc(dev, sizeof(*irq_data) * res->nr_irqs,
+	irq_data = devm_kcalloc(dev, res->nr_irqs, sizeof(*irq_data),
 				GFP_KERNEL);
 	if (!irq_data)
 		return -ENOMEM;

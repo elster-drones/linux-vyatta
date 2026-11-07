@@ -15,6 +15,7 @@
 #include "xe_hw_fence_types.h"
 #include "xe_lrc_types.h"
 
+struct drm_syncobj;
 struct xe_execlist_exec_queue;
 struct xe_gt;
 struct xe_guc_exec_queue;
@@ -53,6 +54,12 @@ struct xe_exec_queue {
 	struct kref refcount;
 	/** @vm: VM (address space) for this exec queue */
 	struct xe_vm *vm;
+	/**
+	 * @user_vm: User VM (address space) for this exec queue (bind queues
+	 * only)
+	 */
+	struct xe_vm *user_vm;
+
 	/** @class: class of this exec queue */
 	enum xe_engine_class class;
 	/**
@@ -85,6 +92,10 @@ struct xe_exec_queue {
 #define EXEC_QUEUE_FLAG_BIND_ENGINE_CHILD	BIT(3)
 /* kernel exec_queue only, set priority to highest level */
 #define EXEC_QUEUE_FLAG_HIGH_PRIORITY		BIT(4)
+/* flag to indicate low latency hint to guc */
+#define EXEC_QUEUE_FLAG_LOW_LATENCY		BIT(5)
+/* for migration (kernel copy, clear, bind) jobs */
+#define EXEC_QUEUE_FLAG_MIGRATE			BIT(6)
 
 	/**
 	 * @flags: flags for this exec queue, should statically setup aside from ban
@@ -128,7 +139,46 @@ struct xe_exec_queue {
 		u32 seqno;
 		/** @lr.link: link into VM's list of exec queues */
 		struct list_head link;
+		/**
+		 * @lr.suspended: Tracks whether the consumer-issued suspend()
+		 * succeeded and a matching resume() is still owed. suspend() can
+		 * fail (e.g. killed/banned/wedged), leaving the queue
+		 * un-suspended, so consumers must only resume() queues that were
+		 * actually suspended. Set by the suspend caller on success and
+		 * cleared by the resume caller. A queue is only ever suspended by
+		 * a single consumer at a time (preempt-fence mode and hw engine
+		 * group fault mode are mutually exclusive), so a single flag is
+		 * sufficient.
+		 */
+		bool suspended;
 	} lr;
+
+#define XE_EXEC_QUEUE_TLB_INVAL_PRIMARY_GT	0
+#define XE_EXEC_QUEUE_TLB_INVAL_MEDIA_GT	1
+#define XE_EXEC_QUEUE_TLB_INVAL_COUNT		(XE_EXEC_QUEUE_TLB_INVAL_MEDIA_GT  + 1)
+
+	/** @tlb_inval: TLB invalidations exec queue state */
+	struct {
+		/**
+		 * @tlb_inval.dep_scheduler: The TLB invalidation
+		 * dependency scheduler
+		 */
+		struct xe_dep_scheduler *dep_scheduler;
+	} tlb_inval[XE_EXEC_QUEUE_TLB_INVAL_COUNT];
+
+	/** @pxp: PXP info tracking */
+	struct {
+		/** @pxp.type: PXP session type used by this queue */
+		u8 type;
+		/** @pxp.link: link into the list of PXP exec queues */
+		struct list_head link;
+	} pxp;
+
+	/** @ufence_syncobj: User fence syncobj */
+	struct drm_syncobj *ufence_syncobj;
+
+	/** @ufence_timeline_value: User fence timeline value */
+	u64 ufence_timeline_value;
 
 	/** @ops: submission backend exec queue operations */
 	const struct xe_exec_queue_ops *ops;
@@ -156,8 +206,14 @@ struct xe_exec_queue_ops {
 	int (*init)(struct xe_exec_queue *q);
 	/** @kill: Kill inflight submissions for backend */
 	void (*kill)(struct xe_exec_queue *q);
-	/** @fini: Fini exec queue for submission backend */
+	/** @fini: Undoes the init() for submission backend */
 	void (*fini)(struct xe_exec_queue *q);
+	/**
+	 * @destroy: Destroy exec queue for submission backend. The backend
+	 * function must call xe_exec_queue_fini() (which will in turn call the
+	 * fini() backend function) to ensure the queue is properly cleaned up.
+	 */
+	void (*destroy)(struct xe_exec_queue *q);
 	/** @set_priority: Set priority for exec queue */
 	int (*set_priority)(struct xe_exec_queue *q,
 			    enum xe_exec_queue_priority priority);

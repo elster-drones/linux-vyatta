@@ -311,7 +311,7 @@ any_mode_retry:
 		 * concurrently change. And we just keep trying until we get one
 		 * of the modes...
 		 */
-		if (iio_device_claim_direct_mode(indio_dev))
+		if (!iio_device_claim_direct(indio_dev))
 			goto any_mode_retry;
 		/*
 		 * This path means that we managed to claim direct mode. In
@@ -320,7 +320,8 @@ any_mode_retry:
 		 */
 		ret = opt4060_set_state_common(chip, continuous_sampling,
 					       continuous_irq);
-		iio_device_release_direct_mode(indio_dev);
+		iio_device_release_direct(indio_dev);
+		return ret;
 	} else {
 		/*
 		 * This path means that we managed to claim buffer mode. In
@@ -649,6 +650,9 @@ static int opt4060_write_raw(struct iio_dev *indio_dev,
 
 	switch (mask) {
 	case IIO_CHAN_INFO_INT_TIME:
+		if (val)
+			return -EINVAL;
+
 		int_time = opt4060_als_time_to_index(val2);
 		if (int_time < 0)
 			return int_time;
@@ -727,6 +731,7 @@ static ssize_t opt4060_read_ev_period(struct opt4060_chip *chip, int *val,
 {
 	int ret, pers, fault_count, int_time;
 	u64 uval;
+	u32 rem;
 
 	int_time = opt4060_int_time_reg[chip->int_time][0];
 
@@ -752,7 +757,8 @@ static ssize_t opt4060_read_ev_period(struct opt4060_chip *chip, int *val,
 	}
 
 	uval = mul_u32_u32(int_time, pers);
-	*val = div_u64_rem(uval, MICRO, val2);
+	*val = div_u64_rem(uval, MICRO, &rem);
+	*val2 = rem;
 
 	return IIO_VAL_INT_PLUS_MICRO;
 }
@@ -822,7 +828,7 @@ static int opt4060_get_thresholds(struct opt4060_chip *chip, u32 *th_lo, u32 *th
 
 	ret = regmap_read(chip->regmap, OPT4060_THRESHOLD_HIGH, &regval);
 	if (ret) {
-		dev_err(chip->dev, "Failed to read THRESHOLD_LOW.\n");
+		dev_err(chip->dev, "Failed to read THRESHOLD_HIGH.\n");
 		return ret;
 	}
 	*th_hi = opt4060_calc_val_from_th_reg(regval);
@@ -1062,7 +1068,7 @@ static const struct regmap_config opt4060_regmap_config = {
 	.name = "opt4060",
 	.reg_bits = 8,
 	.val_bits = 16,
-	.cache_type = REGCACHE_RBTREE,
+	.cache_type = REGCACHE_MAPLE,
 	.max_register = OPT4060_DEVICE_ID,
 	.readable_reg = opt4060_readable_reg,
 	.writeable_reg = opt4060_writable_reg,
@@ -1082,15 +1088,13 @@ static irqreturn_t opt4060_trigger_handler(int irq, void *p)
 	struct  {
 		u32 chan[OPT4060_NUM_CHANS];
 		aligned_s64 ts;
-	} raw;
+	} raw = { };
 	int i = 0;
 	int chan, ret;
 
 	/* If the trigger is not from this driver, a new sample is needed.*/
 	if (iio_trigger_validate_own_device(idev->trig, idev))
 		opt4060_trigger_new_samples(idev);
-
-	memset(&raw, 0, sizeof(raw));
 
 	iio_for_each_active_channel(idev, chan) {
 		if (chan == OPT4060_ILLUM)
@@ -1105,7 +1109,7 @@ static irqreturn_t opt4060_trigger_handler(int irq, void *p)
 		}
 	}
 
-	iio_push_to_buffers_with_timestamp(idev, &raw, pf->timestamp);
+	iio_push_to_buffers_with_ts(idev, &raw, sizeof(raw), pf->timestamp);
 err_read:
 	iio_trigger_notify_done(idev->trig);
 	return IRQ_HANDLED;
@@ -1213,7 +1217,7 @@ static int opt4060_setup_trigger(struct opt4060_chip *chip, struct iio_dev *idev
 	name = devm_kasprintf(chip->dev, GFP_KERNEL, "%s-opt4060",
 			      dev_name(chip->dev));
 	if (!name)
-		return dev_err_probe(chip->dev, -ENOMEM, "Failed to alloc chip name\n");
+		return -ENOMEM;
 
 	ret = devm_request_threaded_irq(chip->dev, chip->irq, NULL, opt4060_irq_thread,
 					IRQF_TRIGGER_FALLING | IRQF_ONESHOT,
@@ -1300,8 +1304,7 @@ static int opt4060_probe(struct i2c_client *client)
 
 	ret = devm_add_action_or_reset(dev, opt4060_chip_off_action, chip);
 	if (ret < 0)
-		return dev_err_probe(dev, ret,
-				     "Failed to setup power off action\n");
+		return ret;
 
 	ret = opt4060_setup_buffer(chip, indio_dev);
 	if (ret)

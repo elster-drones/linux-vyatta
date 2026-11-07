@@ -17,6 +17,14 @@ enum {
 	 * It's also ignored unless IORING_SETUP_DEFER_TASKRUN is set.
 	 */
 	IOU_F_TWQ_LAZY_WAKE			= 1,
+
+	/*
+	 * Set when task_work is queued from a waitqueue wakeup handler, where
+	 * an arbitrary provider waitqueue lock is held. Signaling the CQ ring
+	 * eventfd inline from there can recurse back into that lock through
+	 * epoll, so the eventfd signal must be deferred.
+	 */
+	IOU_F_TWQ_IN_WAKE			= 2,
 };
 
 enum io_uring_cmd_flags {
@@ -26,6 +34,8 @@ enum io_uring_cmd_flags {
 	IO_URING_F_MULTISHOT		= 4,
 	/* executed by io-wq */
 	IO_URING_F_IOWQ			= 8,
+	/* executed inline from syscall */
+	IO_URING_F_INLINE		= 16,
 	/* int's last bit, sign checks are usually faster than a bit test */
 	IO_URING_F_NONBLOCK		= INT_MIN,
 
@@ -84,6 +94,25 @@ struct io_mapped_region {
 };
 
 /*
+ * Return value from io_buffer_list selection, to avoid stashing it in
+ * struct io_kiocb. For legacy/classic provided buffers, keeping a reference
+ * across execution contexts are fine. But for ring provided buffers, the
+ * list may go away as soon as ->uring_lock is dropped. As the io_kiocb
+ * persists, it's better to just keep the buffer local for those cases.
+ */
+struct io_br_sel {
+	struct io_buffer_list *buf_list;
+	/*
+	 * Some selection parts return the user address, others return an error.
+	 */
+	union {
+		void __user *addr;
+		ssize_t val;
+	};
+};
+
+
+/*
  * Arbitrary limit, can be raised if need be
  */
 #define IO_RINGFD_REG_MAX 16
@@ -106,6 +135,14 @@ struct io_uring_task {
 		struct llist_head	task_list;
 		struct callback_head	task_work;
 	} ____cacheline_aligned_in_smp;
+};
+
+struct iou_vec {
+	union {
+		struct iovec	*iovec;
+		struct bio_vec	*bvec;
+	};
+	unsigned		nr; /* number of struct iovec it can hold */
 };
 
 struct io_uring {
@@ -292,6 +329,8 @@ struct io_ring_ctx {
 
 		struct io_file_table	file_table;
 		struct io_rsrc_data	buf_table;
+		struct io_alloc_cache	node_cache;
+		struct io_alloc_cache	imu_cache;
 
 		struct io_submit_state	submit_state;
 
@@ -306,7 +345,7 @@ struct io_ring_ctx {
 		struct io_alloc_cache	apoll_cache;
 		struct io_alloc_cache	netmsg_cache;
 		struct io_alloc_cache	rw_cache;
-		struct io_alloc_cache	uring_cache;
+		struct io_alloc_cache	cmd_cache;
 
 		/*
 		 * Any cancelable uring_cmd is added to this list in
@@ -331,7 +370,6 @@ struct io_ring_ctx {
 		unsigned		cached_cq_tail;
 		unsigned		cq_entries;
 		struct io_ev_fd	__rcu	*io_ev_fd;
-		unsigned		cq_extra;
 
 		void			*cq_wait_arg;
 		size_t			cq_wait_size;
@@ -342,6 +380,7 @@ struct io_ring_ctx {
 	 * regularly bounce b/w CPUs.
 	 */
 	struct {
+		struct io_rings	__rcu	*rings_rcu;
 		struct llist_head	work_llist;
 		struct llist_head	retry_llist;
 		unsigned long		check_cq;
@@ -360,7 +399,6 @@ struct io_ring_ctx {
 
 	spinlock_t		completion_lock;
 
-	struct list_head	io_buffers_comp;
 	struct list_head	cq_overflow_list;
 
 	struct hlist_head	waitid_list;
@@ -379,11 +417,12 @@ struct io_ring_ctx {
 	unsigned int		file_alloc_start;
 	unsigned int		file_alloc_end;
 
-	struct list_head	io_buffers_cache;
-
 	/* Keep this last, we don't need it for the fast path */
 	struct wait_queue_head		poll_wq;
 	struct io_restriction		restrictions;
+
+	/* Stores zcrx object pointers of type struct io_zcrx_ifq */
+	struct xarray			zcrx_ctxs;
 
 	u32			pers_next;
 	struct xarray		personalities;
@@ -406,10 +445,16 @@ struct io_ring_ctx {
 	u32				iowq_limits[2];
 
 	struct callback_head		poll_wq_task_work;
+	/* deferred ->poll_wq wake up for local task_work */
+	struct rcu_head			poll_wq_rcu;
+	atomic_t			poll_wq_rcu_pending;
 	struct list_head		defer_list;
+	unsigned			nr_drained;
+	/* drain request dispatched from ->defer_list, until it completes */
+	struct io_kiocb			*drain_req;
 
-	struct io_alloc_cache		msg_cache;
-	spinlock_t			msg_lock;
+	/* protected by ->completion_lock */
+	unsigned			nr_req_allocated;
 
 #ifdef CONFIG_NET_RX_BUSY_POLL
 	struct list_head	napi_list;	/* track busy poll napi_id */
@@ -422,9 +467,6 @@ struct io_ring_ctx {
 
 	DECLARE_HASHTABLE(napi_ht, 4);
 #endif
-
-	/* protected by ->completion_lock */
-	unsigned			evfd_last_cq_tail;
 
 	/*
 	 * Protection for resize vs mmap races - both the mmap and resize
@@ -439,8 +481,16 @@ struct io_ring_ctx {
 	struct io_mapped_region		param_region;
 };
 
+/*
+ * Token indicating function is called in task work context:
+ * ctx->uring_lock is held and any completions generated will be flushed.
+ * ONLY core io_uring.c should instantiate this struct.
+ */
 struct io_tw_state {
+	bool cancel;
 };
+/* Alias to use in code that doesn't instantiate struct io_tw_state */
+typedef struct io_tw_state io_tw_token_t;
 
 enum {
 	REQ_F_FIXED_FILE_BIT	= IOSQE_FIXED_FILE_BIT,
@@ -470,6 +520,7 @@ enum {
 	REQ_F_SKIP_LINK_CQES_BIT,
 	REQ_F_SINGLE_POLL_BIT,
 	REQ_F_DOUBLE_POLL_BIT,
+	REQ_F_MULTISHOT_BIT,
 	REQ_F_APOLL_MULTISHOT_BIT,
 	REQ_F_CLEAR_POLLIN_BIT,
 	/* keep async read/write and isreg together and in order */
@@ -481,7 +532,10 @@ enum {
 	REQ_F_BL_NO_RECYCLE_BIT,
 	REQ_F_BUFFERS_COMMIT_BIT,
 	REQ_F_BUF_NODE_BIT,
+	REQ_F_BUF_MORE_BIT,
 	REQ_F_HAS_METADATA_BIT,
+	REQ_F_IMPORT_BUFFER_BIT,
+	REQ_F_SQE_COPIED_BIT,
 
 	/* not a real bit, just to check we're not overflowing the space */
 	__REQ_F_LAST_BIT,
@@ -546,6 +600,8 @@ enum {
 	REQ_F_SINGLE_POLL	= IO_REQ_FLAG(REQ_F_SINGLE_POLL_BIT),
 	/* double poll may active */
 	REQ_F_DOUBLE_POLL	= IO_REQ_FLAG(REQ_F_DOUBLE_POLL_BIT),
+	/* request posts multiple completions, should be set at prep time */
+	REQ_F_MULTISHOT		= IO_REQ_FLAG(REQ_F_MULTISHOT_BIT),
 	/* fast poll multishot mode */
 	REQ_F_APOLL_MULTISHOT	= IO_REQ_FLAG(REQ_F_APOLL_MULTISHOT_BIT),
 	/* recvmsg special flag, clear EPOLLIN */
@@ -562,11 +618,24 @@ enum {
 	REQ_F_BUFFERS_COMMIT	= IO_REQ_FLAG(REQ_F_BUFFERS_COMMIT_BIT),
 	/* buf node is valid */
 	REQ_F_BUF_NODE		= IO_REQ_FLAG(REQ_F_BUF_NODE_BIT),
+	/* incremental buffer consumption, more space available */
+	REQ_F_BUF_MORE		= IO_REQ_FLAG(REQ_F_BUF_MORE_BIT),
 	/* request has read/write metadata assigned */
 	REQ_F_HAS_METADATA	= IO_REQ_FLAG(REQ_F_HAS_METADATA_BIT),
+	/*
+	 * For vectored fixed buffers, resolve iovec to registered buffers.
+	 * For SEND_ZC, whether to import buffers (i.e. the first issue).
+	 */
+	REQ_F_IMPORT_BUFFER	= IO_REQ_FLAG(REQ_F_IMPORT_BUFFER_BIT),
+	/* ->sqe_copy() has been called, if necessary */
+	REQ_F_SQE_COPIED	= IO_REQ_FLAG(REQ_F_SQE_COPIED_BIT),
 };
 
-typedef void (*io_req_tw_func_t)(struct io_kiocb *req, struct io_tw_state *ts);
+struct io_tw_req {
+	struct io_kiocb *req;
+};
+
+typedef void (*io_req_tw_func_t)(struct io_tw_req tw_req, io_tw_token_t tw);
 
 struct io_task_work {
 	struct llist_node		node;
@@ -601,7 +670,11 @@ static inline void io_kiocb_cmd_sz_check(size_t cmd_sz)
 	io_kiocb_cmd_sz_check(sizeof(cmd_type)) , \
 	((cmd_type *)&(req)->cmd) \
 )
-#define cmd_to_io_kiocb(ptr)	((struct io_kiocb *) ptr)
+
+static inline struct io_kiocb *cmd_to_io_kiocb(void *ptr)
+{
+	return ptr;
+}
 
 struct io_kiocb {
 	union {
@@ -620,8 +693,7 @@ struct io_kiocb {
 	u8				iopoll_completed;
 	/*
 	 * Can be either a fixed buffer index, or used with provided buffers.
-	 * For the latter, before issue it points to the buffer group ID,
-	 * and after selection it points to the buffer ID itself.
+	 * For the latter, it points to the selected buffer ID.
 	 */
 	u16				buf_index;
 
@@ -638,12 +710,6 @@ struct io_kiocb {
 	union {
 		/* stores selected buf, valid IFF REQ_F_BUFFER_SELECTED is set */
 		struct io_buffer	*kbuf;
-
-		/*
-		 * stores buffer ID for ring provided buffers, valid IFF
-		 * REQ_F_BUFFER_RING is set.
-		 */
-		struct io_buffer_list	*buf_list;
 
 		struct io_rsrc_node	*buf_node;
 	};
@@ -668,6 +734,8 @@ struct io_kiocb {
 		struct hlist_node	hash_node;
 		/* For IOPOLL setup queues, with hybrid polling */
 		u64                     iopoll_start;
+		/* for private io_kiocb freeing */
+		struct rcu_head		rcu_head;
 	};
 	/* internal polling, see IORING_FEAT_FAST_POLL */
 	struct async_poll		*apoll;
@@ -680,7 +748,7 @@ struct io_kiocb {
 	const struct cred		*creds;
 	struct io_wq_work		work;
 
-	struct {
+	struct io_big_cqe {
 		u64			extra1;
 		u64			extra2;
 	} big_cqe;
@@ -690,10 +758,4 @@ struct io_overflow_cqe {
 	struct list_head list;
 	struct io_uring_cqe cqe;
 };
-
-static inline bool io_ctx_cqe32(struct io_ring_ctx *ctx)
-{
-	return ctx->flags & IORING_SETUP_CQE32;
-}
-
 #endif

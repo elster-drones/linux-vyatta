@@ -351,6 +351,7 @@ static int nct7363_present_pwm_fanin(struct device *dev,
 	if (ret)
 		return ret;
 
+	of_node_put(args.np);
 	if (args.args[0] >= NCT7363_PWM_COUNT)
 		return -EINVAL;
 	data->pwm_mask |= BIT(args.args[0]);
@@ -391,7 +392,7 @@ static const struct regmap_config nct7363_regmap_config = {
 	.val_bits = 8,
 	.use_single_read = true,
 	.use_single_write = true,
-	.cache_type = REGCACHE_RBTREE,
+	.cache_type = REGCACHE_MAPLE,
 	.volatile_reg = nct7363_regmap_is_volatile,
 };
 

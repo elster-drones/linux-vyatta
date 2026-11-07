@@ -78,6 +78,11 @@ xfs_cui_item_size(
 	*nbytes += xfs_cui_log_format_sizeof(cuip->cui_format.cui_nextents);
 }
 
+unsigned int xfs_cui_log_space(unsigned int nr)
+{
+	return xlog_item_space(1, xfs_cui_log_format_sizeof(nr));
+}
+
 /*
  * This is called to fill in the vector of log iovecs for the
  * given cui log item. We use only 1 iovec, and we point that
@@ -177,6 +182,11 @@ xfs_cud_item_size(
 {
 	*nvecs += 1;
 	*nbytes += sizeof(struct xfs_cud_log_format);
+}
+
+unsigned int xfs_cud_log_space(void)
+{
+	return xlog_item_space(1, sizeof(struct xfs_cud_log_format));
 }
 
 /*
@@ -500,6 +510,7 @@ xfs_refcount_recover_work(
 	struct xfs_cui_log_item		*cuip = CUI_ITEM(lip);
 	struct xfs_trans		*tp;
 	struct xfs_mount		*mp = lip->li_log->l_mp;
+	unsigned int			dblocks;
 	bool				isrt = xfs_cui_item_isrt(lip);
 	int				i;
 	int				error = 0;
@@ -535,8 +546,11 @@ xfs_refcount_recover_work(
 	 * full btree split on either end of the refcount range.
 	 */
 	resv = xlog_recover_resv(&M_RES(mp)->tr_itruncate);
-	error = xfs_trans_alloc(mp, &resv, mp->m_refc_maxlevels * 2, 0,
-			XFS_TRANS_RESERVE, &tp);
+	if (isrt)
+		dblocks = mp->m_rtrefc_maxlevels * 2;
+	else
+		dblocks = mp->m_refc_maxlevels * 2;
+	error = xfs_trans_alloc(mp, &resv, dblocks, 0, XFS_TRANS_RESERVE, &tp);
 	if (error)
 		return error;
 
@@ -707,18 +721,18 @@ xlog_recover_cui_commit_pass2(
 	struct xfs_cui_log_format	*cui_formatp;
 	size_t				len;
 
-	cui_formatp = item->ri_buf[0].i_addr;
+	cui_formatp = item->ri_buf[0].iov_base;
 
-	if (item->ri_buf[0].i_len < xfs_cui_log_format_sizeof(0)) {
+	if (item->ri_buf[0].iov_len < xfs_cui_log_format_sizeof(0)) {
 		XFS_CORRUPTION_ERROR(__func__, XFS_ERRLEVEL_LOW, mp,
-				item->ri_buf[0].i_addr, item->ri_buf[0].i_len);
+				item->ri_buf[0].iov_base, item->ri_buf[0].iov_len);
 		return -EFSCORRUPTED;
 	}
 
 	len = xfs_cui_log_format_sizeof(cui_formatp->cui_nextents);
-	if (item->ri_buf[0].i_len != len) {
+	if (item->ri_buf[0].iov_len != len) {
 		XFS_CORRUPTION_ERROR(__func__, XFS_ERRLEVEL_LOW, mp,
-				item->ri_buf[0].i_addr, item->ri_buf[0].i_len);
+				item->ri_buf[0].iov_base, item->ri_buf[0].iov_len);
 		return -EFSCORRUPTED;
 	}
 
@@ -749,18 +763,18 @@ xlog_recover_rtcui_commit_pass2(
 	struct xfs_cui_log_format	*cui_formatp;
 	size_t				len;
 
-	cui_formatp = item->ri_buf[0].i_addr;
+	cui_formatp = item->ri_buf[0].iov_base;
 
-	if (item->ri_buf[0].i_len < xfs_cui_log_format_sizeof(0)) {
+	if (item->ri_buf[0].iov_len < xfs_cui_log_format_sizeof(0)) {
 		XFS_CORRUPTION_ERROR(__func__, XFS_ERRLEVEL_LOW, mp,
-				item->ri_buf[0].i_addr, item->ri_buf[0].i_len);
+				item->ri_buf[0].iov_base, item->ri_buf[0].iov_len);
 		return -EFSCORRUPTED;
 	}
 
 	len = xfs_cui_log_format_sizeof(cui_formatp->cui_nextents);
-	if (item->ri_buf[0].i_len != len) {
+	if (item->ri_buf[0].iov_len != len) {
 		XFS_CORRUPTION_ERROR(__func__, XFS_ERRLEVEL_LOW, mp,
-				item->ri_buf[0].i_addr, item->ri_buf[0].i_len);
+				item->ri_buf[0].iov_base, item->ri_buf[0].iov_len);
 		return -EFSCORRUPTED;
 	}
 
@@ -781,7 +795,7 @@ xlog_recover_rtcui_commit_pass2(
 	xfs_lsn_t			lsn)
 {
 	XFS_CORRUPTION_ERROR(__func__, XFS_ERRLEVEL_LOW, log->l_mp,
-			item->ri_buf[0].i_addr, item->ri_buf[0].i_len);
+			item->ri_buf[0].iov_base, item->ri_buf[0].iov_len);
 	return -EFSCORRUPTED;
 }
 #endif
@@ -807,10 +821,10 @@ xlog_recover_cud_commit_pass2(
 {
 	struct xfs_cud_log_format	*cud_formatp;
 
-	cud_formatp = item->ri_buf[0].i_addr;
-	if (item->ri_buf[0].i_len != sizeof(struct xfs_cud_log_format)) {
+	cud_formatp = item->ri_buf[0].iov_base;
+	if (item->ri_buf[0].iov_len != sizeof(struct xfs_cud_log_format)) {
 		XFS_CORRUPTION_ERROR(__func__, XFS_ERRLEVEL_LOW, log->l_mp,
-				item->ri_buf[0].i_addr, item->ri_buf[0].i_len);
+				item->ri_buf[0].iov_base, item->ri_buf[0].iov_len);
 		return -EFSCORRUPTED;
 	}
 
@@ -833,10 +847,10 @@ xlog_recover_rtcud_commit_pass2(
 {
 	struct xfs_cud_log_format	*cud_formatp;
 
-	cud_formatp = item->ri_buf[0].i_addr;
-	if (item->ri_buf[0].i_len != sizeof(struct xfs_cud_log_format)) {
+	cud_formatp = item->ri_buf[0].iov_base;
+	if (item->ri_buf[0].iov_len != sizeof(struct xfs_cud_log_format)) {
 		XFS_CORRUPTION_ERROR(__func__, XFS_ERRLEVEL_LOW, log->l_mp,
-				item->ri_buf[0].i_addr, item->ri_buf[0].i_len);
+				item->ri_buf[0].iov_base, item->ri_buf[0].iov_len);
 		return -EFSCORRUPTED;
 	}
 

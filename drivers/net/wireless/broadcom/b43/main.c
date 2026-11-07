@@ -2166,7 +2166,7 @@ static void b43_print_fw_helptext(struct b43_wl *wl, bool error)
 {
 	const char text[] =
 		"You must go to " \
-		"https://wireless.wiki.kernel.org/en/users/Drivers/b43#devicefirmware " \
+		"https://wireless.docs.kernel.org/en/latest/en/users/drivers/b43/developers.html#list-of-firmware " \
 		"and download the correct firmware for this driver version. " \
 		"Please carefully read all instructions on this website.\n";
 
@@ -3975,7 +3975,7 @@ static void b43_set_retry_limits(struct b43_wldev *dev,
 			long_retry);
 }
 
-static int b43_op_config(struct ieee80211_hw *hw, u32 changed)
+static int b43_op_config(struct ieee80211_hw *hw, int radio_idx, u32 changed)
 {
 	struct b43_wl *wl = hw_to_b43_wl(hw);
 	struct b43_wldev *dev = wl->current_dev;
@@ -5073,7 +5073,7 @@ static int b43_op_start(struct ieee80211_hw *hw)
 	 * may hang the system.
 	 */
 	if (!err)
-		b43_op_config(hw, ~0);
+		b43_op_config(hw, -1, ~0);
 
 	return err;
 }
@@ -5248,7 +5248,7 @@ out:
 	}
 
 	/* reload configuration */
-	b43_op_config(wl->hw, ~0);
+	b43_op_config(wl->hw, -1, ~0);
 	if (wl->vif)
 		b43_op_bss_info_changed(wl->hw, wl->vif, &wl->vif->bss_conf, ~0);
 
@@ -5663,6 +5663,7 @@ static void b43_bcma_remove(struct bcma_device *core)
 {
 	struct b43_wldev *wldev = bcma_get_drvdata(core);
 	struct b43_wl *wl = wldev->wl;
+	struct b43_bus_dev *dev = wldev->dev;
 
 	/* We must cancel any work here before unregistering from ieee80211,
 	 * as the ieee80211 unreg will destroy the workqueue. */
@@ -5677,14 +5678,14 @@ static void b43_bcma_remove(struct bcma_device *core)
 		ieee80211_unregister_hw(wl->hw);
 	}
 
-	b43_one_core_detach(wldev->dev);
+	b43_one_core_detach(dev);
 
 	/* Unregister HW RNG driver */
 	b43_rng_exit(wl);
 
 	b43_leds_unregister(wl);
 	ieee80211_free_hw(wl->hw);
-	kfree(wldev->dev);
+	kfree(dev);
 }
 
 static struct bcma_driver b43_bcma_driver = {

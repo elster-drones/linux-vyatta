@@ -569,9 +569,7 @@ xrep_parent_scan_dirtree(
 	if (sc->ilock_flags & (XFS_ILOCK_SHARED | XFS_ILOCK_EXCL))
 		xchk_iunlock(sc, sc->ilock_flags & (XFS_ILOCK_SHARED |
 						    XFS_ILOCK_EXCL));
-	error = xchk_trans_alloc_empty(sc);
-	if (error)
-		return error;
+	xchk_trans_alloc_empty(sc);
 
 	while ((error = xchk_iscan_iter(&rp->pscan.iscan, &ip)) == 1) {
 		bool		flush;
@@ -597,9 +595,7 @@ xrep_parent_scan_dirtree(
 			if (error)
 				break;
 
-			error = xchk_trans_alloc_empty(sc);
-			if (error)
-				break;
+			xchk_trans_alloc_empty(sc);
 		}
 
 		if (xchk_should_terminate(sc, &error))
@@ -914,6 +910,10 @@ xrep_parent_fetch_xattr_remote(
 	};
 	int			error;
 
+	/* Don't even try to handle a bizarrely large xattr. */
+	if (valuelen > XATTR_SIZE_MAX)
+		return -EFSCORRUPTED;
+
 	/*
 	 * If we need a larger value buffer, try to allocate one.  If that
 	 * fails, return with -EDEADLOCK to try harder.
@@ -1099,9 +1099,7 @@ xrep_parent_flush_xattrs(
 	xrep_tempfile_iounlock(rp->sc);
 
 	/* Recreate the empty transaction and relock the inode. */
-	error = xchk_trans_alloc_empty(rp->sc);
-	if (error)
-		return error;
+	xchk_trans_alloc_empty(rp->sc);
 	xchk_ilock(rp->sc, XFS_ILOCK_EXCL);
 	return 0;
 }
@@ -1503,7 +1501,6 @@ xrep_parent_setup_scan(
 	struct xrep_parent	*rp)
 {
 	struct xfs_scrub	*sc = rp->sc;
-	char			*descr;
 	struct xfs_da_geometry	*geo = sc->mp->m_attr_geo;
 	int			max_len;
 	int			error;
@@ -1531,32 +1528,22 @@ xrep_parent_setup_scan(
 		goto out_xattr_name;
 
 	/* Set up some staging memory for logging parent pointer updates. */
-	descr = xchk_xfile_ino_descr(sc, "parent pointer entries");
-	error = xfarray_create(descr, 0, sizeof(struct xrep_pptr),
-			&rp->pptr_recs);
-	kfree(descr);
+	error = xfarray_create("parent pointer entries", 0,
+			sizeof(struct xrep_pptr), &rp->pptr_recs);
 	if (error)
 		goto out_xattr_value;
 
-	descr = xchk_xfile_ino_descr(sc, "parent pointer names");
-	error = xfblob_create(descr, &rp->pptr_names);
-	kfree(descr);
+	error = xfblob_create("parent pointer names", &rp->pptr_names);
 	if (error)
 		goto out_recs;
 
 	/* Set up some storage for copying attrs before the mapping exchange */
-	descr = xchk_xfile_ino_descr(sc,
-				"parent pointer retained xattr entries");
-	error = xfarray_create(descr, 0, sizeof(struct xrep_parent_xattr),
-			&rp->xattr_records);
-	kfree(descr);
+	error = xfarray_create("parent pointer xattr entries", 0,
+			sizeof(struct xrep_parent_xattr), &rp->xattr_records);
 	if (error)
 		goto out_names;
 
-	descr = xchk_xfile_ino_descr(sc,
-				"parent pointer retained xattr values");
-	error = xfblob_create(descr, &rp->xattr_blobs);
-	kfree(descr);
+	error = xfblob_create("parent pointer xattr values", &rp->xattr_blobs);
 	if (error)
 		goto out_attr_keys;
 

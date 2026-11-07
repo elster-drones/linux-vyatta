@@ -67,7 +67,6 @@
 #include "sdma_v2_4.h"
 #include "sdma_v3_0.h"
 #include "dce_v10_0.h"
-#include "dce_v11_0.h"
 #include "iceland_ih.h"
 #include "tonga_ih.h"
 #include "cz_ih.h"
@@ -167,16 +166,16 @@ static const struct amdgpu_video_codec_info tonga_video_codecs_decode_array[] =
 {
 	{
 		.codec_type = AMDGPU_INFO_VIDEO_CAPS_CODEC_IDX_MPEG2,
-		.max_width = 4096,
-		.max_height = 4096,
-		.max_pixels_per_frame = 4096 * 4096,
+		.max_width = 1920,
+		.max_height = 1088,
+		.max_pixels_per_frame = 1920 * 1088,
 		.max_level = 3,
 	},
 	{
 		.codec_type = AMDGPU_INFO_VIDEO_CAPS_CODEC_IDX_MPEG4,
-		.max_width = 4096,
-		.max_height = 4096,
-		.max_pixels_per_frame = 4096 * 4096,
+		.max_width = 1920,
+		.max_height = 1088,
+		.max_pixels_per_frame = 1920 * 1088,
 		.max_level = 5,
 	},
 	{
@@ -188,9 +187,9 @@ static const struct amdgpu_video_codec_info tonga_video_codecs_decode_array[] =
 	},
 	{
 		.codec_type = AMDGPU_INFO_VIDEO_CAPS_CODEC_IDX_VC1,
-		.max_width = 4096,
-		.max_height = 4096,
-		.max_pixels_per_frame = 4096 * 4096,
+		.max_width = 1920,
+		.max_height = 1088,
+		.max_pixels_per_frame = 1920 * 1088,
 		.max_level = 4,
 	},
 };
@@ -206,16 +205,16 @@ static const struct amdgpu_video_codec_info cz_video_codecs_decode_array[] =
 {
 	{
 		.codec_type = AMDGPU_INFO_VIDEO_CAPS_CODEC_IDX_MPEG2,
-		.max_width = 4096,
-		.max_height = 4096,
-		.max_pixels_per_frame = 4096 * 4096,
+		.max_width = 1920,
+		.max_height = 1088,
+		.max_pixels_per_frame = 1920 * 1088,
 		.max_level = 3,
 	},
 	{
 		.codec_type = AMDGPU_INFO_VIDEO_CAPS_CODEC_IDX_MPEG4,
-		.max_width = 4096,
-		.max_height = 4096,
-		.max_pixels_per_frame = 4096 * 4096,
+		.max_width = 1920,
+		.max_height = 1088,
+		.max_pixels_per_frame = 1920 * 1088,
 		.max_level = 5,
 	},
 	{
@@ -227,9 +226,9 @@ static const struct amdgpu_video_codec_info cz_video_codecs_decode_array[] =
 	},
 	{
 		.codec_type = AMDGPU_INFO_VIDEO_CAPS_CODEC_IDX_VC1,
-		.max_width = 4096,
-		.max_height = 4096,
-		.max_pixels_per_frame = 4096 * 4096,
+		.max_width = 1920,
+		.max_height = 1088,
+		.max_pixels_per_frame = 1920 * 1088,
 		.max_level = 4,
 	},
 	{
@@ -1408,9 +1407,30 @@ static uint64_t vi_get_pcie_replay_count(struct amdgpu_device *adev)
 	return (nak_r + nak_g);
 }
 
+struct vi_reset_quirk {
+	u16 device;
+	u16 subsystem_vendor;
+	u16 subsystem_device;
+	u8 revision;
+};
+
+static const struct vi_reset_quirk vi_reset_quirks[] = {
+	{ 0x67ef, PCI_VENDOR_ID_APPLE, 0x0190, 0xe3 }, /* Radeon Pro 555X */
+	{ 0x67ef, PCI_VENDOR_ID_APPLE, 0x018f, 0xc2 }, /* Radeon Pro 560X */
+	{ 0x67ef, PCI_VENDOR_ID_APPLE, 0x017a, 0xc7 }, /* Radeon Pro 555 */
+};
+
 static bool vi_need_reset_on_init(struct amdgpu_device *adev)
 {
+	unsigned int i;
 	u32 clock_cntl, pc;
+
+	for (i = 0; i < ARRAY_SIZE(vi_reset_quirks); i++)
+		if (adev->pdev->device == vi_reset_quirks[i].device &&
+		    adev->pdev->subsystem_vendor == vi_reset_quirks[i].subsystem_vendor &&
+		    adev->pdev->subsystem_device == vi_reset_quirks[i].subsystem_device &&
+		    adev->pdev->revision == vi_reset_quirks[i].revision)
+			return true;
 
 	if (adev->flags & AMD_IS_APU)
 		return false;
@@ -1736,7 +1756,7 @@ static int vi_common_resume(struct amdgpu_ip_block *ip_block)
 	return vi_common_hw_init(ip_block);
 }
 
-static bool vi_common_is_idle(void *handle)
+static bool vi_common_is_idle(struct amdgpu_ip_block *ip_block)
 {
 	return true;
 }
@@ -1994,9 +2014,9 @@ static int vi_common_set_powergating_state(struct amdgpu_ip_block *ip_block,
 	return 0;
 }
 
-static void vi_common_get_clockgating_state(void *handle, u64 *flags)
+static void vi_common_get_clockgating_state(struct amdgpu_ip_block *ip_block, u64 *flags)
 {
-	struct amdgpu_device *adev = (struct amdgpu_device *)handle;
+	struct amdgpu_device *adev = ip_block->adev;
 	int data;
 
 	if (amdgpu_sriov_vf(adev))
@@ -2124,8 +2144,6 @@ int vi_set_ip_blocks(struct amdgpu_device *adev)
 		else if (amdgpu_device_has_dc_support(adev))
 			amdgpu_device_ip_block_add(adev, &dm_ip_block);
 #endif
-		else
-			amdgpu_device_ip_block_add(adev, &dce_v11_2_ip_block);
 		amdgpu_device_ip_block_add(adev, &uvd_v6_3_ip_block);
 		amdgpu_device_ip_block_add(adev, &vce_v3_4_ip_block);
 		break;
@@ -2142,8 +2160,6 @@ int vi_set_ip_blocks(struct amdgpu_device *adev)
 		else if (amdgpu_device_has_dc_support(adev))
 			amdgpu_device_ip_block_add(adev, &dm_ip_block);
 #endif
-		else
-			amdgpu_device_ip_block_add(adev, &dce_v11_0_ip_block);
 		amdgpu_device_ip_block_add(adev, &uvd_v6_0_ip_block);
 		amdgpu_device_ip_block_add(adev, &vce_v3_1_ip_block);
 #if defined(CONFIG_DRM_AMD_ACP)
@@ -2163,8 +2179,6 @@ int vi_set_ip_blocks(struct amdgpu_device *adev)
 		else if (amdgpu_device_has_dc_support(adev))
 			amdgpu_device_ip_block_add(adev, &dm_ip_block);
 #endif
-		else
-			amdgpu_device_ip_block_add(adev, &dce_v11_0_ip_block);
 		amdgpu_device_ip_block_add(adev, &uvd_v6_2_ip_block);
 		amdgpu_device_ip_block_add(adev, &vce_v3_4_ip_block);
 #if defined(CONFIG_DRM_AMD_ACP)

@@ -30,6 +30,7 @@
 #include "xfs_reflink.h"
 #include "xfs_rtbitmap.h"
 #include "xfs_rtgroup.h"
+#include "xfs_zone_alloc.h"
 
 /* Kernel only BMAP related definitions and functions */
 
@@ -436,7 +437,8 @@ xfs_bmap_punch_delalloc_range(
 	struct xfs_inode	*ip,
 	int			whichfork,
 	xfs_off_t		start_byte,
-	xfs_off_t		end_byte)
+	xfs_off_t		end_byte,
+	struct xfs_zone_alloc_ctx *ac)
 {
 	struct xfs_mount	*mp = ip->i_mount;
 	struct xfs_ifork	*ifp = xfs_ifork_ptr(ip, whichfork);
@@ -467,7 +469,21 @@ xfs_bmap_punch_delalloc_range(
 			continue;
 		}
 
-		xfs_bmap_del_extent_delay(ip, whichfork, &icur, &got, &del);
+		if (xfs_is_zoned_inode(ip) && ac) {
+			/*
+			 * In a zoned buffered write context we need to return
+			 * the punched delalloc allocations to the allocation
+			 * context.  This allows reusing them in the following
+			 * iomap iterations.
+			 */
+			xfs_bmap_del_extent_delay(ip, whichfork, &icur, &got,
+					&del, XFS_BMAPI_REMAP);
+			ac->reserved_blocks += del.br_blockcount;
+		} else {
+			xfs_bmap_del_extent_delay(ip, whichfork, &icur, &got,
+					&del, 0);
+		}
+
 		if (!xfs_iext_get_extent(ifp, &icur, &got))
 			break;
 	}
@@ -582,7 +598,7 @@ xfs_free_eofblocks(
 		if (ip->i_delayed_blks) {
 			xfs_bmap_punch_delalloc_range(ip, XFS_DATA_FORK,
 				round_up(XFS_ISIZE(ip), mp->m_sb.sb_blocksize),
-				LLONG_MAX);
+				LLONG_MAX, NULL);
 		}
 		xfs_inode_clear_eofblocks_tag(ip);
 		return 0;
@@ -825,7 +841,8 @@ int
 xfs_free_file_space(
 	struct xfs_inode	*ip,
 	xfs_off_t		offset,
-	xfs_off_t		len)
+	xfs_off_t		len,
+	struct xfs_zone_alloc_ctx *ac)
 {
 	struct xfs_mount	*mp = ip->i_mount;
 	xfs_fileoff_t		startoffset_fsb;
@@ -880,7 +897,7 @@ xfs_free_file_space(
 		return 0;
 	if (offset + len > XFS_ISIZE(ip))
 		len = XFS_ISIZE(ip) - offset;
-	error = xfs_zero_range(ip, offset, len, NULL);
+	error = xfs_zero_range(ip, offset, len, ac, NULL);
 	if (error)
 		return error;
 
@@ -968,7 +985,8 @@ int
 xfs_collapse_file_space(
 	struct xfs_inode	*ip,
 	xfs_off_t		offset,
-	xfs_off_t		len)
+	xfs_off_t		len,
+	struct xfs_zone_alloc_ctx *ac)
 {
 	struct xfs_mount	*mp = ip->i_mount;
 	struct xfs_trans	*tp;
@@ -981,7 +999,7 @@ xfs_collapse_file_space(
 
 	trace_xfs_collapse_file_space(ip);
 
-	error = xfs_free_file_space(ip, offset, len);
+	error = xfs_free_file_space(ip, offset, len, ac);
 	if (error)
 		return error;
 
@@ -1496,7 +1514,6 @@ xfs_swap_extents(
 	struct xfs_bstat	*sbp = &sxp->sx_stat;
 	int			src_log_flags, target_log_flags;
 	int			error = 0;
-	uint64_t		f;
 	int			resblks = 0;
 	unsigned int		flags = 0;
 	struct timespec64	ctime, mtime;
@@ -1652,14 +1669,12 @@ xfs_swap_extents(
 	if (error)
 		goto out_trans_cancel;
 
-	/* Do we have to swap reflink flags? */
-	if ((ip->i_diflags2 & XFS_DIFLAG2_REFLINK) ^
-	    (tip->i_diflags2 & XFS_DIFLAG2_REFLINK)) {
-		f = ip->i_diflags2 & XFS_DIFLAG2_REFLINK;
-		ip->i_diflags2 &= ~XFS_DIFLAG2_REFLINK;
-		ip->i_diflags2 |= tip->i_diflags2 & XFS_DIFLAG2_REFLINK;
-		tip->i_diflags2 &= ~XFS_DIFLAG2_REFLINK;
-		tip->i_diflags2 |= f & XFS_DIFLAG2_REFLINK;
+	/* Either inode may now own shared blocks; flag both, with CoW forks. */
+	if ((ip->i_diflags2 | tip->i_diflags2) & XFS_DIFLAG2_REFLINK) {
+		ip->i_diflags2 |= XFS_DIFLAG2_REFLINK;
+		tip->i_diflags2 |= XFS_DIFLAG2_REFLINK;
+		xfs_ifork_init_cow(ip);
+		xfs_ifork_init_cow(tip);
 	}
 
 	/* Swap the cow forks. */

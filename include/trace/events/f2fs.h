@@ -50,6 +50,9 @@ TRACE_DEFINE_ENUM(CP_PAUSE);
 TRACE_DEFINE_ENUM(CP_RESIZE);
 TRACE_DEFINE_ENUM(EX_READ);
 TRACE_DEFINE_ENUM(EX_BLOCK_AGE);
+TRACE_DEFINE_ENUM(CP_PHASE_START_BLOCK_OPS);
+TRACE_DEFINE_ENUM(CP_PHASE_FINISH_BLOCK_OPS);
+TRACE_DEFINE_ENUM(CP_PHASE_FINISH_CHECKPOINT);
 
 #define show_block_type(type)						\
 	__print_symbolic(type,						\
@@ -174,6 +177,12 @@ TRACE_DEFINE_ENUM(EX_BLOCK_AGE);
 
 #define S_ALL_PERM	(S_ISUID | S_ISGID | S_ISVTX |	\
 			S_IRWXU | S_IRWXG | S_IRWXO)
+
+#define show_cp_phase(phase)					\
+	__print_symbolic(phase,						\
+		{ CP_PHASE_START_BLOCK_OPS,		"start block_ops" },			\
+		{ CP_PHASE_FINISH_BLOCK_OPS,	"finish block_ops" },			\
+		{ CP_PHASE_FINISH_CHECKPOINT,	"finish checkpoint" })
 
 struct f2fs_sb_info;
 struct f2fs_io_info;
@@ -1472,7 +1481,6 @@ TRACE_EVENT(f2fs_writepages,
 		__field(char,	for_kupdate)
 		__field(char,	for_background)
 		__field(char,	tagged_writepages)
-		__field(char,	for_reclaim)
 		__field(char,	range_cyclic)
 		__field(char,	for_sync)
 	),
@@ -1491,14 +1499,13 @@ TRACE_EVENT(f2fs_writepages,
 		__entry->for_kupdate	= wbc->for_kupdate;
 		__entry->for_background	= wbc->for_background;
 		__entry->tagged_writepages	= wbc->tagged_writepages;
-		__entry->for_reclaim	= wbc->for_reclaim;
 		__entry->range_cyclic	= wbc->range_cyclic;
 		__entry->for_sync	= wbc->for_sync;
 	),
 
 	TP_printk("dev = (%d,%d), ino = %lu, %s, %s, nr_to_write %ld, "
 		"skipped %ld, start %lld, end %lld, wb_idx %lu, sync_mode %d, "
-		"kupdate %u background %u tagged %u reclaim %u cyclic %u sync %u",
+		"kupdate %u background %u tagged %u cyclic %u sync %u",
 		show_dev_ino(__entry),
 		show_block_type(__entry->type),
 		show_file_type(__entry->dir),
@@ -1511,7 +1518,6 @@ TRACE_EVENT(f2fs_writepages,
 		__entry->for_kupdate,
 		__entry->for_background,
 		__entry->tagged_writepages,
-		__entry->for_reclaim,
 		__entry->range_cyclic,
 		__entry->for_sync)
 );
@@ -1544,26 +1550,26 @@ TRACE_EVENT(f2fs_readpages,
 
 TRACE_EVENT(f2fs_write_checkpoint,
 
-	TP_PROTO(struct super_block *sb, int reason, const char *msg),
+	TP_PROTO(struct super_block *sb, int reason, u16 phase),
 
-	TP_ARGS(sb, reason, msg),
+	TP_ARGS(sb, reason, phase),
 
 	TP_STRUCT__entry(
 		__field(dev_t,	dev)
 		__field(int,	reason)
-		__string(dest_msg, msg)
+		__field(u16, phase)
 	),
 
 	TP_fast_assign(
 		__entry->dev		= sb->s_dev;
 		__entry->reason		= reason;
-		__assign_str(dest_msg);
+		__entry->phase		= phase;
 	),
 
 	TP_printk("dev = (%d,%d), checkpoint for %s, state = %s",
 		show_dev(__entry->dev),
 		show_cpreason(__entry->reason),
-		__get_str(dest_msg))
+		show_cp_phase(__entry->phase))
 );
 
 DECLARE_EVENT_CLASS(f2fs_discard,

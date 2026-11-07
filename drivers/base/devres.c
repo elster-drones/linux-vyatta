@@ -576,7 +576,10 @@ void *devres_open_group(struct device *dev, void *id, gfp_t gfp)
 }
 EXPORT_SYMBOL_GPL(devres_open_group);
 
-/* Find devres group with ID @id.  If @id is NULL, look for the latest. */
+/*
+ * Find devres group with ID @id.  If @id is NULL, look for the latest open
+ * group.
+ */
 static struct devres_group *find_group(struct device *dev, void *id)
 {
 	struct devres_node *node;
@@ -687,6 +690,13 @@ int devres_release_group(struct device *dev, void *id)
 		spin_unlock_irqrestore(&dev->devres_lock, flags);
 
 		release_nodes(dev, &todo);
+	} else if (list_empty(&dev->devres_head)) {
+		/*
+		 * dev is probably dying via devres_release_all(): groups
+		 * have already been removed and are on the process of
+		 * being released - don't touch and don't warn.
+		 */
+		spin_unlock_irqrestore(&dev->devres_lock, flags);
 	} else {
 		WARN_ON(1);
 		spin_unlock_irqrestore(&dev->devres_lock, flags);
@@ -748,6 +758,17 @@ int __devm_add_action(struct device *dev, void (*action)(void *), void *data, co
 	return 0;
 }
 EXPORT_SYMBOL_GPL(__devm_add_action);
+
+bool devm_is_action_added(struct device *dev, void (*action)(void *), void *data)
+{
+	struct action_devres devres = {
+		.data = data,
+		.action = action,
+	};
+
+	return devres_find(dev, devm_action_release, devm_action_match, &devres);
+}
+EXPORT_SYMBOL_GPL(devm_is_action_added);
 
 /**
  * devm_remove_action_nowarn() - removes previously added custom action
@@ -919,6 +940,8 @@ void *devm_krealloc(struct device *dev, void *ptr, size_t new_size, gfp_t gfp)
 	if (!new_dr)
 		return NULL;
 
+	set_node_dbginfo(&new_dr->node, "devm_krealloc_release", new_size);
+
 	/*
 	 * The spinlock protects the linked list against concurrent
 	 * modifications but not the resource itself.
@@ -966,17 +989,10 @@ EXPORT_SYMBOL_GPL(devm_krealloc);
  */
 char *devm_kstrdup(struct device *dev, const char *s, gfp_t gfp)
 {
-	size_t size;
-	char *buf;
-
 	if (!s)
 		return NULL;
 
-	size = strlen(s) + 1;
-	buf = devm_kmalloc(dev, size, gfp);
-	if (buf)
-		memcpy(buf, s, size);
-	return buf;
+	return devm_kmemdup(dev, s, strlen(s) + 1, gfp);
 }
 EXPORT_SYMBOL_GPL(devm_kstrdup);
 
@@ -1102,6 +1118,27 @@ void *devm_kmemdup(struct device *dev, const void *src, size_t len, gfp_t gfp)
 	return p;
 }
 EXPORT_SYMBOL_GPL(devm_kmemdup);
+
+/**
+ * devm_kmemdup_const - conditionally duplicate and manage a region of memory
+ *
+ * @dev: Device this memory belongs to
+ * @src: memory region to duplicate
+ * @len: memory region length,
+ * @gfp: GFP mask to use
+ *
+ * Return: source address if it is in .rodata or the return value of kmemdup()
+ * to which the function falls back otherwise.
+ */
+const void *
+devm_kmemdup_const(struct device *dev, const void *src, size_t len, gfp_t gfp)
+{
+	if (is_kernel_rodata((unsigned long)src))
+		return src;
+
+	return devm_kmemdup(dev, src, len, gfp);
+}
+EXPORT_SYMBOL_GPL(devm_kmemdup_const);
 
 struct pages_devres {
 	unsigned long addr;

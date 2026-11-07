@@ -557,9 +557,9 @@ static int cs530x_set_fmt(struct snd_soc_dai *dai, unsigned int fmt)
 	unsigned int asp_fmt, asp_cfg = 0;
 
 	switch (fmt & SND_SOC_DAIFMT_MASTER_MASK) {
-	case SND_SOC_DAIFMT_CBS_CFS:
+	case SND_SOC_DAIFMT_CBC_CFC:
 		break;
-	case SND_SOC_DAIFMT_CBM_CFM:
+	case SND_SOC_DAIFMT_CBP_CFP:
 		asp_cfg = CS530X_ASP_PRIMARY;
 		break;
 	default:
@@ -793,7 +793,7 @@ static int cs530x_set_sysclk(struct snd_soc_component *component, int clk_id,
 	case CS530X_SYSCLK_SRC_PLL:
 		break;
 	default:
-		dev_err(component->dev, "Invalid clock id %d\n", clk_id);
+		dev_err(component->dev, "Invalid sysclk source: %d\n", source);
 		return -EINVAL;
 	}
 

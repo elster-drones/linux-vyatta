@@ -36,6 +36,7 @@
 #include <sound/core.h>
 #include <linux/dma-mapping.h>
 #include <linux/platform_device.h>
+#include <linux/string.h>
 #include <linux/timer.h>
 #include <linux/random.h>
 #include <linux/debugfs.h>
@@ -279,39 +280,35 @@ static void fill_block_pattern(struct pcmtst_buf_iter *v_iter, struct snd_pcm_ru
 		fill_block_pattern_n(v_iter, runtime);
 }
 
+static void fill_random_block(char *buf, size_t buf_size, size_t pos,
+			      size_t count)
+{
+	while (count) {
+		size_t chunk = min(count, buf_size - pos);
+
+		get_random_bytes(buf + pos, chunk);
+		count -= chunk;
+		pos = 0;
+	}
+}
+
 static void fill_block_rand_n(struct pcmtst_buf_iter *v_iter, struct snd_pcm_runtime *runtime)
 {
 	unsigned int channels = runtime->channels;
-	// Remaining space in all channel buffers
-	size_t bytes_remain = runtime->dma_bytes - v_iter->buf_pos;
+	size_t pos = v_iter->buf_pos / channels;
 	unsigned int i;
 
-	for (i = 0; i < channels; i++) {
-		if (v_iter->b_rw <= bytes_remain) {
-			//b_rw - count of bytes must be written for all channels at each timer tick
-			get_random_bytes(runtime->dma_area + buf_pos_n(v_iter, channels, i),
-					 v_iter->b_rw / channels);
-		} else {
-			// Write to the end of buffer and start from the beginning of it
-			get_random_bytes(runtime->dma_area + buf_pos_n(v_iter, channels, i),
-					 bytes_remain / channels);
-			get_random_bytes(runtime->dma_area + v_iter->chan_block * i,
-					 (v_iter->b_rw - bytes_remain) / channels);
-		}
-	}
+	for (i = 0; i < channels; i++)
+		fill_random_block(runtime->dma_area + v_iter->chan_block * i,
+				  v_iter->chan_block, pos,
+				  v_iter->b_rw / channels);
 	inc_buf_pos(v_iter, v_iter->b_rw, runtime->dma_bytes);
 }
 
 static void fill_block_rand_i(struct pcmtst_buf_iter *v_iter, struct snd_pcm_runtime *runtime)
 {
-	size_t in_cur_block = runtime->dma_bytes - v_iter->buf_pos;
-
-	if (v_iter->b_rw <= in_cur_block) {
-		get_random_bytes(&runtime->dma_area[v_iter->buf_pos], v_iter->b_rw);
-	} else {
-		get_random_bytes(&runtime->dma_area[v_iter->buf_pos], in_cur_block);
-		get_random_bytes(runtime->dma_area, v_iter->b_rw - in_cur_block);
-	}
+	fill_random_block(runtime->dma_area, runtime->dma_bytes,
+			  v_iter->buf_pos, v_iter->b_rw);
 	inc_buf_pos(v_iter, v_iter->b_rw, runtime->dma_bytes);
 }
 
@@ -345,7 +342,7 @@ static void timer_timeout(struct timer_list *data)
 	struct pcmtst_buf_iter *v_iter;
 	struct snd_pcm_substream *substream;
 
-	v_iter = from_timer(v_iter, data, timer_instance);
+	v_iter = timer_container_of(v_iter, data, timer_instance);
 	substream = v_iter->substream;
 
 	if (v_iter->suspend)
@@ -555,7 +552,7 @@ static int snd_pcmtst_new_pcm(struct pcmtst *pcmtst)
 	if (err < 0)
 		return err;
 	pcm->private_data = pcmtst;
-	strcpy(pcm->name, "PCMTest");
+	strscpy(pcm->name, "PCMTest");
 	pcmtst->pcm = pcm;
 	snd_pcm_set_ops(pcm, SNDRV_PCM_STREAM_PLAYBACK, &snd_pcmtst_playback_ops);
 	snd_pcm_set_ops(pcm, SNDRV_PCM_STREAM_CAPTURE, &snd_pcmtst_capture_ops);
@@ -613,9 +610,9 @@ static int pcmtst_probe(struct platform_device *pdev)
 	if (err < 0)
 		return err;
 
-	strcpy(card->driver, "PCM-TEST Driver");
-	strcpy(card->shortname, "PCM-Test");
-	strcpy(card->longname, "PCM-Test virtual driver");
+	strscpy(card->driver, "PCM-TEST Driver");
+	strscpy(card->shortname, "PCM-Test");
+	strscpy(card->longname, "PCM-Test virtual driver");
 
 	err = snd_card_register(card);
 	if (err < 0)
@@ -753,13 +750,24 @@ static int __init mod_init(void)
 
 	err = init_debug_files(buf_allocated);
 	if (err)
-		return err;
+		goto err_free_patterns;
 	err = platform_device_register(&pcmtst_pdev);
-	if (err)
-		return err;
+	if (err) {
+		platform_device_put(&pcmtst_pdev);
+		goto err_clear_debug;
+	}
 	err = platform_driver_register(&pcmtst_pdrv);
-	if (err)
+	if (err) {
 		platform_device_unregister(&pcmtst_pdev);
+		goto err_clear_debug;
+	}
+
+	return 0;
+
+err_clear_debug:
+	clear_debug_files();
+err_free_patterns:
+	free_pattern_buffers();
 	return err;
 }
 

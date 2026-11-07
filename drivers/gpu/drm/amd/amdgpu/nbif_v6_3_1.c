@@ -21,7 +21,6 @@
  *
  */
 #include "amdgpu.h"
-#include "amdgpu_atombios.h"
 #include "nbif_v6_3_1.h"
 
 #include "nbif/nbif_6_3_1_offset.h"
@@ -316,7 +315,6 @@ static u32 nbif_v6_3_1_get_rom_offset(struct amdgpu_device *adev)
 static void nbif_v6_3_1_program_ltr(struct amdgpu_device *adev)
 {
 	uint32_t def, data;
-	u16 devctl2;
 
 	def = RREG32_SOC15(NBIO, 0, regRCC_EP_DEV0_0_EP_PCIE_TX_LTR_CNTL);
 	data = 0x35EB;
@@ -330,15 +328,8 @@ static void nbif_v6_3_1_program_ltr(struct amdgpu_device *adev)
 	if (def != data)
 		WREG32_SOC15(NBIO, 0, regRCC_STRAP0_RCC_BIF_STRAP2, data);
 
-	pcie_capability_read_word(adev->pdev, PCI_EXP_DEVCTL2, &devctl2);
-
-	if (adev->pdev->ltr_path == (devctl2 & PCI_EXP_DEVCTL2_LTR_EN))
-		return;
-
-	if (adev->pdev->ltr_path)
-		pcie_capability_set_word(adev->pdev, PCI_EXP_DEVCTL2, PCI_EXP_DEVCTL2_LTR_EN);
-	else
-		pcie_capability_clear_word(adev->pdev, PCI_EXP_DEVCTL2, PCI_EXP_DEVCTL2_LTR_EN);
+	pcie_capability_set_word(adev->pdev, PCI_EXP_DEVCTL2,
+				 PCI_EXP_DEVCTL2_LTR_EN);
 }
 #endif
 
@@ -346,7 +337,7 @@ static void nbif_v6_3_1_program_aspm(struct amdgpu_device *adev)
 {
 #ifdef CONFIG_PCIEASPM
 	uint32_t def, data;
-	u16 devctl2, ltr;
+	u16 ltr;
 
 	def = data = RREG32_SOC15(PCIE, 0, regPCIE_LC_CNTL);
 	data &= ~PCIE_LC_CNTL__LC_L1_INACTIVITY_MASK;
@@ -376,11 +367,8 @@ static void nbif_v6_3_1_program_aspm(struct amdgpu_device *adev)
 	if (def != data)
 		WREG32_SOC15(NBIO, 0, regRCC_STRAP0_RCC_BIF_STRAP5, data);
 
-	pcie_capability_read_word(adev->pdev, PCI_EXP_DEVCTL2, &devctl2);
-	data = def = devctl2;
-	data &= ~PCI_EXP_DEVCTL2_LTR_EN;
-	if (def != data)
-		pcie_capability_set_word(adev->pdev, PCI_EXP_DEVCTL2, (u16)data);
+	pcie_capability_clear_word(adev->pdev, PCI_EXP_DEVCTL2,
+				   PCI_EXP_DEVCTL2_LTR_EN);
 
 	ltr = pci_find_ext_capability(adev->pdev, PCI_EXT_CAP_ID_LTR);
 
@@ -388,15 +376,13 @@ static void nbif_v6_3_1_program_aspm(struct amdgpu_device *adev)
 		pci_write_config_dword(adev->pdev, ltr + PCI_LTR_MAX_SNOOP_LAT, 0x10011001);
 	}
 
-#if 0
-	/* regPSWUSP0_PCIE_LC_CNTL2 should be replace by PCIE_LC_CNTL2 or someone else ? */
-	def = data = RREG32_SOC15(NBIO, 0, regPSWUSP0_PCIE_LC_CNTL2);
-	data |= PSWUSP0_PCIE_LC_CNTL2__LC_ALLOW_PDWN_IN_L1_MASK |
-		PSWUSP0_PCIE_LC_CNTL2__LC_ALLOW_PDWN_IN_L23_MASK;
-	data &= ~PSWUSP0_PCIE_LC_CNTL2__LC_RCV_L0_TO_RCV_L0S_DIS_MASK;
+	def = data = RREG32_SOC15(PCIE, 0, regPCIE_LC_CNTL2);
+	data |= PCIE_LC_CNTL2__LC_ALLOW_PDWN_IN_L1_MASK |
+		PCIE_LC_CNTL2__LC_ALLOW_PDWN_IN_L23_MASK;
+	data &= ~PCIE_LC_CNTL2__LC_RCV_L0_TO_RCV_L0S_DIS_MASK;
 	if (def != data)
-		WREG32_SOC15(NBIO, 0, regPSWUSP0_PCIE_LC_CNTL2, data);
-#endif
+		WREG32_SOC15(PCIE, 0, regPCIE_LC_CNTL2, data);
+
 	def = data = RREG32_SOC15(PCIE, 0, regPCIE_LC_CNTL4);
 	data |= PCIE_LC_CNTL4__LC_L1_POWERDOWN_MASK;
 	if (def != data)
@@ -407,7 +393,12 @@ static void nbif_v6_3_1_program_aspm(struct amdgpu_device *adev)
 	if (def != data)
 		WREG32_SOC15(PCIE, 0, regPCIE_LC_RXRECOVER_RXSTANDBY_CNTL, data);
 
-	nbif_v6_3_1_program_ltr(adev);
+	/*
+	 * Do not enable endpoint LTR unless the Root Complex and every
+	 * upstream switch support it.
+	 */
+	if (adev->pdev->ltr_path)
+		nbif_v6_3_1_program_ltr(adev);
 
 	def = data = RREG32_SOC15(NBIO, 0, regRCC_STRAP0_RCC_BIF_STRAP3);
 	data |= 0x5DE0 << RCC_STRAP0_RCC_BIF_STRAP3__STRAP_VLINK_ASPM_IDLE_TIMER__SHIFT;
@@ -473,52 +464,6 @@ const struct amdgpu_nbio_funcs nbif_v6_3_1_funcs = {
 	.set_reg_remap = nbif_v6_3_1_set_reg_remap,
 };
 
-
-static void nbif_v6_3_1_sriov_ih_doorbell_range(struct amdgpu_device *adev,
-						bool use_doorbell, int doorbell_index)
-{
-}
-
-static void nbif_v6_3_1_sriov_sdma_doorbell_range(struct amdgpu_device *adev,
-						  int instance, bool use_doorbell,
-						  int doorbell_index,
-						  int doorbell_size)
-{
-}
-
-static void nbif_v6_3_1_sriov_vcn_doorbell_range(struct amdgpu_device *adev,
-						 bool use_doorbell,
-						 int doorbell_index, int instance)
-{
-}
-
-static void nbif_v6_3_1_sriov_gc_doorbell_init(struct amdgpu_device *adev)
-{
-}
-
-const struct amdgpu_nbio_funcs nbif_v6_3_1_sriov_funcs = {
-	.get_hdp_flush_req_offset = nbif_v6_3_1_get_hdp_flush_req_offset,
-	.get_hdp_flush_done_offset = nbif_v6_3_1_get_hdp_flush_done_offset,
-	.get_pcie_index_offset = nbif_v6_3_1_get_pcie_index_offset,
-	.get_pcie_data_offset = nbif_v6_3_1_get_pcie_data_offset,
-	.get_rev_id = nbif_v6_3_1_get_rev_id,
-	.mc_access_enable = nbif_v6_3_1_mc_access_enable,
-	.get_memsize = nbif_v6_3_1_get_memsize,
-	.sdma_doorbell_range = nbif_v6_3_1_sriov_sdma_doorbell_range,
-	.vcn_doorbell_range = nbif_v6_3_1_sriov_vcn_doorbell_range,
-	.gc_doorbell_init = nbif_v6_3_1_sriov_gc_doorbell_init,
-	.enable_doorbell_aperture = nbif_v6_3_1_enable_doorbell_aperture,
-	.enable_doorbell_selfring_aperture = nbif_v6_3_1_enable_doorbell_selfring_aperture,
-	.ih_doorbell_range = nbif_v6_3_1_sriov_ih_doorbell_range,
-	.update_medium_grain_clock_gating = nbif_v6_3_1_update_medium_grain_clock_gating,
-	.update_medium_grain_light_sleep = nbif_v6_3_1_update_medium_grain_light_sleep,
-	.get_clockgating_state = nbif_v6_3_1_get_clockgating_state,
-	.ih_control = nbif_v6_3_1_ih_control,
-	.init_registers = nbif_v6_3_1_init_registers,
-	.remap_hdp_registers = nbif_v6_3_1_remap_hdp_registers,
-	.get_rom_offset = nbif_v6_3_1_get_rom_offset,
-	.set_reg_remap = nbif_v6_3_1_set_reg_remap,
-};
 
 static int nbif_v6_3_1_set_ras_err_event_athub_irq_state(struct amdgpu_device *adev,
 						       struct amdgpu_irq_src *src,

@@ -449,7 +449,7 @@ static void rxrpc_activate_one_channel(struct rxrpc_connection *conn,
 	trace_rxrpc_connect_call(call);
 	call->tx_last_sent = ktime_get_real();
 	rxrpc_start_call_timer(call);
-	rxrpc_set_call_state(call, RXRPC_CALL_CLIENT_SEND_REQUEST);
+	rxrpc_set_call_state(call, RXRPC_CALL_CLIENT_PRE_SEND);
 	wake_up(&call->waitq);
 }
 
@@ -818,7 +818,7 @@ void rxrpc_clean_up_local_conns(struct rxrpc_local *local)
 
 	local->kill_all_client_conns = true;
 
-	del_timer_sync(&local->client_conn_reap_timer);
+	timer_delete_sync(&local->client_conn_reap_timer);
 
 	while ((conn = list_first_entry_or_null(&local->idle_client_conns,
 						struct rxrpc_connection, cache_link))) {

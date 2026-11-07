@@ -514,7 +514,8 @@ static int msg_alloc_iov(struct msghdr *msg,
 	return 0;
 unwind_iov:
 	for (i--; i >= 0 ; i--)
-		free(msg->msg_iov[i].iov_base);
+		free(iov[i].iov_base);
+	free(iov);
 	return -ENOMEM;
 }
 
@@ -1372,7 +1373,7 @@ run:
 	} else
 		fprintf(stderr, "unknown test\n");
 out:
-	/* Detatch and zero all the maps */
+	/* Detach and zero all the maps */
 	bpf_prog_detach2(bpf_program__fd(progs[3]), cg_fd, BPF_CGROUP_SOCK_OPS);
 
 	for (i = 0; i < ARRAY_SIZE(links); i++) {

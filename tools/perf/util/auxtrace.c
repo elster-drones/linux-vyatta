@@ -55,6 +55,7 @@
 #include "hisi-ptt.h"
 #include "s390-cpumsf.h"
 #include "util/mmap.h"
+#include "powerpc-vpadtl.h"
 
 #include <linux/ctype.h>
 #include "symbol/kallsyms.h"
@@ -185,10 +186,7 @@ void auxtrace_mmap_params__set_idx(struct auxtrace_mmap_params *mp,
 
 	if (per_cpu) {
 		mp->cpu = perf_cpu_map__cpu(evlist->core.all_cpus, idx);
-		if (evlist->core.threads)
-			mp->tid = perf_thread_map__pid(evlist->core.threads, 0);
-		else
-			mp->tid = -1;
+		mp->tid = perf_thread_map__pid(evlist->core.threads, 0);
 	} else {
 		mp->cpu.cpu = -1;
 		mp->tid = perf_thread_map__pid(evlist->core.threads, idx);
@@ -237,7 +235,11 @@ static int auxtrace_queues__grow(struct auxtrace_queues *queues,
 {
 	unsigned int nr_queues = queues->nr_queues;
 	struct auxtrace_queue *queue_array;
+	struct auxtrace_queue *old_array = queues->queue_array;
 	unsigned int i;
+
+	if (!new_nr_queues)
+		return -EINVAL;
 
 	if (!nr_queues)
 		nr_queues = AUXTRACE_INIT_NR_QUEUES;
@@ -253,16 +255,17 @@ static int auxtrace_queues__grow(struct auxtrace_queues *queues,
 		return -ENOMEM;
 
 	for (i = 0; i < queues->nr_queues; i++) {
-		list_splice_tail(&queues->queue_array[i].head,
+		list_splice_tail(&old_array[i].head,
 				 &queue_array[i].head);
-		queue_array[i].tid = queues->queue_array[i].tid;
-		queue_array[i].cpu = queues->queue_array[i].cpu;
-		queue_array[i].set = queues->queue_array[i].set;
-		queue_array[i].priv = queues->queue_array[i].priv;
+		queue_array[i].tid = old_array[i].tid;
+		queue_array[i].cpu = old_array[i].cpu;
+		queue_array[i].set = old_array[i].set;
+		queue_array[i].priv = old_array[i].priv;
 	}
 
 	queues->nr_queues = nr_queues;
 	queues->queue_array = queue_array;
+	free(old_array);
 
 	return 0;
 }
@@ -1173,16 +1176,19 @@ static int auxtrace_queue_data_cb(struct perf_session *session,
 	if (!qd->samples || event->header.type != PERF_RECORD_SAMPLE)
 		return 0;
 
+	perf_sample__init(&sample, /*all=*/false);
 	err = evlist__parse_sample(session->evlist, event, &sample);
 	if (err)
-		return err;
+		goto out;
 
-	if (!sample.aux_sample.size)
-		return 0;
+	if (sample.aux_sample.size) {
+		offset += sample.aux_sample.data - (void *)event;
 
-	offset += sample.aux_sample.data - (void *)event;
-
-	return session->auxtrace->queue_data(session, &sample, NULL, offset);
+		err = session->auxtrace->queue_data(session, &sample, NULL, offset);
+	}
+out:
+	perf_sample__exit(&sample);
+	return err;
 }
 
 int auxtrace_queue_data(struct perf_session *session, bool samples, bool events)
@@ -1389,6 +1395,9 @@ int perf_event__process_auxtrace_info(struct perf_session *session,
 		break;
 	case PERF_AUXTRACE_HISI_PTT:
 		err = hisi_ptt_process_auxtrace_info(event, session);
+		break;
+	case PERF_AUXTRACE_VPA_DTL:
+		err = powerpc_vpadtl_process_auxtrace_info(event, session);
 		break;
 	case PERF_AUXTRACE_UNKNOWN:
 	default:
@@ -1887,7 +1896,7 @@ int __weak compat_auxtrace_mmap__write_tail(struct auxtrace_mmap *mm, u64 tail)
 }
 
 static int __auxtrace_mmap__read(struct mmap *map,
-				 struct auxtrace_record *itr,
+				 struct auxtrace_record *itr, struct perf_env *env,
 				 const struct perf_tool *tool, process_auxtrace_t fn,
 				 bool snapshot, size_t snapshot_size)
 {
@@ -1897,7 +1906,7 @@ static int __auxtrace_mmap__read(struct mmap *map,
 	size_t size, head_off, old_off, len1, len2, padding;
 	union perf_event ev;
 	void *data1, *data2;
-	int kernel_is_64_bit = perf_env__kernel_is_64_bit(evsel__env(NULL));
+	int kernel_is_64_bit = perf_env__kernel_is_64_bit(env);
 
 	head = auxtrace_mmap__read_head(mm, kernel_is_64_bit);
 
@@ -1999,17 +2008,18 @@ static int __auxtrace_mmap__read(struct mmap *map,
 }
 
 int auxtrace_mmap__read(struct mmap *map, struct auxtrace_record *itr,
-			const struct perf_tool *tool, process_auxtrace_t fn)
+			struct perf_env *env, const struct perf_tool *tool,
+			process_auxtrace_t fn)
 {
-	return __auxtrace_mmap__read(map, itr, tool, fn, false, 0);
+	return __auxtrace_mmap__read(map, itr, env, tool, fn, false, 0);
 }
 
 int auxtrace_mmap__read_snapshot(struct mmap *map,
-				 struct auxtrace_record *itr,
+				 struct auxtrace_record *itr, struct perf_env *env,
 				 const struct perf_tool *tool, process_auxtrace_t fn,
 				 size_t snapshot_size)
 {
-	return __auxtrace_mmap__read(map, itr, tool, fn, true, snapshot_size);
+	return __auxtrace_mmap__read(map, itr, env, tool, fn, true, snapshot_size);
 }
 
 /**

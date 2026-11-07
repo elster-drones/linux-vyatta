@@ -1263,7 +1263,7 @@ static int tsl2772_read_raw(struct iio_dev *indio_dev,
 		}
 		break;
 	case IIO_CHAN_INFO_CALIBSCALE:
-		if (chan->type == IIO_LIGHT)
+		if (chan->type == IIO_INTENSITY)
 			*val = tsl2772_als_gain[chip->settings.als_gain];
 		else
 			*val = tsl2772_prox_gain[chip->settings.prox_gain];
@@ -1899,7 +1899,7 @@ static const struct i2c_device_id tsl2772_idtable[] = {
 	{ "tsl2772", tsl2772 },
 	{ "tmd2772", tmd2772 },
 	{ "apds9930", apds9930 },
-	{}
+	{ }
 };
 
 MODULE_DEVICE_TABLE(i2c, tsl2772_idtable);
@@ -1916,7 +1916,7 @@ static const struct of_device_id tsl2772_of_match[] = {
 	{ .compatible = "amstaos,tsl2772" },
 	{ .compatible = "amstaos,tmd2772" },
 	{ .compatible = "avago,apds9930" },
-	{}
+	{ }
 };
 MODULE_DEVICE_TABLE(of, tsl2772_of_match);
 

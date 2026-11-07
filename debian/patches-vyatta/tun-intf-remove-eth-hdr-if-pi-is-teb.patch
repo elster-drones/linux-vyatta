@@ -9,9 +9,11 @@ Signed-off-by: Mandeep Rohilla <mrohilla@vyatta.att-mail.com>
  drivers/net/tun.c |    9 +++++++--
  1 file changed, 7 insertions(+), 2 deletions(-)
 
---- a/drivers/net/tun.c
-+++ b/drivers/net/tun.c
-@@ -1932,8 +1932,13 @@ static ssize_t tun_get_user(struct tun_s
+Index: elster-router-kernel/drivers/net/tun.c
+===================================================================
+--- elster-router-kernel.orig/drivers/net/tun.c
++++ elster-router-kernel/drivers/net/tun.c
+@@ -1890,8 +1890,13 @@ static ssize_t tun_get_user(struct tun_s
  			}
  		}
  

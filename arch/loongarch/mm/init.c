@@ -60,14 +60,10 @@ int __ref page_is_ram(unsigned long pfn)
 	return memblock_is_memory(addr) && !memblock_is_reserved(addr);
 }
 
-#ifndef CONFIG_NUMA
 void __init paging_init(void)
 {
 	unsigned long max_zone_pfns[MAX_NR_ZONES];
 
-#ifdef CONFIG_ZONE_DMA
-	max_zone_pfns[ZONE_DMA] = MAX_DMA_PFN;
-#endif
 #ifdef CONFIG_ZONE_DMA32
 	max_zone_pfns[ZONE_DMA32] = MAX_DMA32_PFN;
 #endif
@@ -75,15 +71,6 @@ void __init paging_init(void)
 
 	free_area_init(max_zone_pfns);
 }
-
-void __init mem_init(void)
-{
-	max_mapnr = max_low_pfn;
-	high_memory = (void *) __va(max_low_pfn << PAGE_SHIFT);
-
-	memblock_free_all();
-}
-#endif /* !CONFIG_NUMA */
 
 void __ref free_initmem(void)
 {
@@ -110,21 +97,9 @@ void arch_remove_memory(u64 start, u64 size, struct vmem_altmap *altmap)
 {
 	unsigned long start_pfn = start >> PAGE_SHIFT;
 	unsigned long nr_pages = size >> PAGE_SHIFT;
-	struct page *page = pfn_to_page(start_pfn);
 
-	/* With altmap the first mapped page is offset from @start */
-	if (altmap)
-		page += vmem_altmap_offset(altmap);
 	__remove_pages(start_pfn, nr_pages, altmap);
 }
-
-#ifdef CONFIG_NUMA
-int memory_add_physaddr_to_nid(u64 start)
-{
-	return pa_to_nid(start);
-}
-EXPORT_SYMBOL_GPL(memory_add_physaddr_to_nid);
-#endif
 #endif
 
 #ifdef CONFIG_SPARSEMEM_VMEMMAP
@@ -246,15 +221,26 @@ pte_t invalid_pte_table[PTRS_PER_PTE] __page_aligned_bss;
 EXPORT_SYMBOL(invalid_pte_table);
 
 #ifdef CONFIG_EXECMEM
+#define MODULES_TEXT_START (MODULES_VADDR)
+#define MODULES_TEXT_END   (MODULES_VADDR + SZ_256M)
+#define MODULES_DATA_START (MODULES_VADDR + SZ_256M)
+#define MODULES_DATA_END   (MODULES_END)
+
 static struct execmem_info execmem_info __ro_after_init;
 
 struct execmem_info __init *execmem_arch_setup(void)
 {
 	execmem_info = (struct execmem_info){
 		.ranges = {
-			[EXECMEM_DEFAULT] = {
-				.start	= MODULES_VADDR,
-				.end	= MODULES_END,
+			[EXECMEM_MODULE_TEXT] = {
+				.start	= MODULES_TEXT_START,
+				.end	= MODULES_TEXT_END,
+				.pgprot	= PAGE_KERNEL,
+				.alignment = 1,
+			},
+			[EXECMEM_MODULE_DATA] = {
+				.start	= MODULES_DATA_START,
+				.end	= MODULES_DATA_END,
 				.pgprot	= PAGE_KERNEL,
 				.alignment = 1,
 			},

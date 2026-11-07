@@ -380,6 +380,7 @@ static ssize_t wwan_hwsim_debugfs_portdestroy_write(struct file *file,
 }
 
 static const struct file_operations wwan_hwsim_debugfs_portdestroy_fops = {
+	.owner = THIS_MODULE,
 	.write = wwan_hwsim_debugfs_portdestroy_write,
 	.open = simple_open,
 	.llseek = noop_llseek,
@@ -404,6 +405,7 @@ static ssize_t wwan_hwsim_debugfs_portcreate_write(struct file *file,
 }
 
 static const struct file_operations wwan_hwsim_debugfs_portcreate_fops = {
+	.owner = THIS_MODULE,
 	.write = wwan_hwsim_debugfs_portcreate_write,
 	.open = simple_open,
 	.llseek = noop_llseek,
@@ -425,6 +427,7 @@ static ssize_t wwan_hwsim_debugfs_devdestroy_write(struct file *file,
 }
 
 static const struct file_operations wwan_hwsim_debugfs_devdestroy_fops = {
+	.owner = THIS_MODULE,
 	.write = wwan_hwsim_debugfs_devdestroy_write,
 	.open = simple_open,
 	.llseek = noop_llseek,
@@ -448,6 +451,7 @@ static ssize_t wwan_hwsim_debugfs_devcreate_write(struct file *file,
 }
 
 static const struct file_operations wwan_hwsim_debugfs_devcreate_fops = {
+	.owner = THIS_MODULE,
 	.write = wwan_hwsim_debugfs_devcreate_write,
 	.open = simple_open,
 	.llseek = noop_llseek,
@@ -509,7 +513,7 @@ static int __init wwan_hwsim_init(void)
 	if (wwan_hwsim_devsnum < 0 || wwan_hwsim_devsnum > 128)
 		return -EINVAL;
 
-	wwan_wq = alloc_workqueue("wwan_wq", 0, 0);
+	wwan_wq = alloc_workqueue("wwan_wq", WQ_PERCPU, 0);
 	if (!wwan_wq)
 		return -ENOMEM;
 

@@ -29,9 +29,11 @@ cc: linux-efi@vger.kernel.org
  4 files changed, 51 insertions(+), 19 deletions(-)
  create mode 100644 drivers/firmware/efi/secureboot.c
 
---- a/arch/x86/kernel/setup.c
-+++ b/arch/x86/kernel/setup.c
-@@ -1073,19 +1073,7 @@ void __init setup_arch(char **cmdline_p)
+Index: elster-router-kernel/arch/x86/kernel/setup.c
+===================================================================
+--- elster-router-kernel.orig/arch/x86/kernel/setup.c
++++ elster-router-kernel/arch/x86/kernel/setup.c
+@@ -1160,19 +1160,7 @@ void __init setup_arch(char **cmdline_p)
  	/* Allocate bigger log buffer */
  	setup_log_buf(1);
  
@@ -52,8 +54,10 @@ cc: linux-efi@vger.kernel.org
  
  	reserve_initrd();
  
---- a/drivers/firmware/efi/Makefile
-+++ b/drivers/firmware/efi/Makefile
+Index: elster-router-kernel/drivers/firmware/efi/Makefile
+===================================================================
+--- elster-router-kernel.orig/drivers/firmware/efi/Makefile
++++ elster-router-kernel/drivers/firmware/efi/Makefile
 @@ -25,6 +25,7 @@ subdir-$(CONFIG_EFI_STUB)		+= libstub
  obj-$(CONFIG_EFI_BOOTLOADER_CONTROL)	+= efibc.o
  obj-$(CONFIG_EFI_TEST)			+= test/
@@ -62,8 +66,10 @@ cc: linux-efi@vger.kernel.org
  obj-$(CONFIG_APPLE_PROPERTIES)		+= apple-properties.o
  obj-$(CONFIG_EFI_RCI2_TABLE)		+= rci2-table.o
  obj-$(CONFIG_EFI_EMBEDDED_FIRMWARE)	+= embedded-firmware.o
+Index: elster-router-kernel/drivers/firmware/efi/secureboot.c
+===================================================================
 --- /dev/null
-+++ b/drivers/firmware/efi/secureboot.c
++++ elster-router-kernel/drivers/firmware/efi/secureboot.c
 @@ -0,0 +1,39 @@
 +
 +/* Core kernel secure boot support.
@@ -104,9 +110,11 @@ cc: linux-efi@vger.kernel.org
 +		}
 +	}
 +}
---- a/include/linux/efi.h
-+++ b/include/linux/efi.h
-@@ -863,6 +863,14 @@ static inline int efi_range_is_wc(unsign
+Index: elster-router-kernel/include/linux/efi.h
+===================================================================
+--- elster-router-kernel.orig/include/linux/efi.h
++++ elster-router-kernel/include/linux/efi.h
+@@ -865,6 +865,14 @@ static inline int efi_range_is_wc(unsign
  #define EFI_MEM_ATTR		9	/* Did firmware publish an EFI_MEMORY_ATTRIBUTES table? */
  #define EFI_MEM_NO_SOFT_RESERVE	10	/* Is the kernel configured to ignore soft reservations? */
  #define EFI_PRESERVE_BS_REGIONS	11	/* Are EFI boot-services memory segments available? */
@@ -121,7 +129,7 @@ cc: linux-efi@vger.kernel.org
  
  #ifdef CONFIG_EFI
  /*
-@@ -887,6 +895,7 @@ static inline bool efi_rt_services_suppo
+@@ -889,6 +897,7 @@ static inline bool efi_rt_services_suppo
  	return (efi.runtime_supported_mask & mask) == mask;
  }
  extern void efi_find_mirror(void);
@@ -129,7 +137,7 @@ cc: linux-efi@vger.kernel.org
  #else
  static inline bool efi_enabled(int feature)
  {
-@@ -906,6 +915,7 @@ static inline bool efi_rt_services_suppo
+@@ -908,6 +917,7 @@ static inline bool efi_rt_services_suppo
  }
  
  static inline void efi_find_mirror(void) {}
@@ -137,7 +145,7 @@ cc: linux-efi@vger.kernel.org
  #endif
  
  extern int efi_status_to_err(efi_status_t status);
-@@ -1124,13 +1134,6 @@ static inline bool efi_runtime_disabled(
+@@ -1126,13 +1136,6 @@ static inline bool efi_runtime_disabled(
  extern void efi_call_virt_check_flags(unsigned long flags, const void *caller);
  extern unsigned long efi_call_virt_save_flags(void);
  

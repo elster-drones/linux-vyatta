@@ -101,7 +101,7 @@ static __always_inline unsigned long __vmcs_readl(unsigned long field)
 
 			  : [output] "=r" (value)
 			  : [field] "r" (field)
-			  : "cc"
+			  : "cc", "memory"
 			  : do_fail, do_exception);
 
 	return value;
@@ -118,7 +118,7 @@ do_exception:
 
 #else /* !CONFIG_CC_HAS_ASM_GOTO_OUTPUT */
 
-	asm volatile("1: vmread %2, %1\n\t"
+	asm volatile("1: vmread %[field], %[output]\n\t"
 		     ".byte 0x3e\n\t" /* branch taken hint */
 		     "ja 3f\n\t"
 
@@ -127,24 +127,26 @@ do_exception:
 		      * @field, and bounce through the trampoline to preserve
 		      * volatile registers.
 		      */
-		     "xorl %k1, %k1\n\t"
+		     "xorl %k[output], %k[output]\n\t"
 		     "2:\n\t"
-		     "push %1\n\t"
-		     "push %2\n\t"
+		     "push %[output]\n\t"
+		     "push %[field]\n\t"
 		     "call vmread_error_trampoline\n\t"
 
 		     /*
 		      * Unwind the stack.  Note, the trampoline zeros out the
 		      * memory for @fault so that the result is '0' on error.
 		      */
-		     "pop %2\n\t"
-		     "pop %1\n\t"
+		     "pop %[field]\n\t"
+		     "pop %[output]\n\t"
 		     "3:\n\t"
 
 		     /* VMREAD faulted.  As above, except push '1' for @fault. */
-		     _ASM_EXTABLE_TYPE_REG(1b, 2b, EX_TYPE_ONE_REG, %1)
+		     _ASM_EXTABLE_TYPE_REG(1b, 2b, EX_TYPE_ONE_REG, %[output])
 
-		     : ASM_CALL_CONSTRAINT, "=&r"(value) : "r"(field) : "cc");
+		     : ASM_CALL_CONSTRAINT, [output] "=&r" (value)
+		     : [field] "r" (field)
+		     : "cc", "memory");
 	return value;
 
 #endif /* CONFIG_CC_HAS_ASM_GOTO_OUTPUT */
@@ -192,7 +194,7 @@ do {									\
 			  ".byte 0x2e\n\t" /* branch not taken hint */	\
 			  "jna %l[error]\n\t"				\
 			  _ASM_EXTABLE(1b, %l[fault])			\
-			  : : op1 : "cc" : error, fault);		\
+			  : : op1 : "cc", "memory" : error, fault);	\
 	return;								\
 error:									\
 	instrumentation_begin();					\
@@ -209,7 +211,7 @@ do {									\
 			  ".byte 0x2e\n\t" /* branch not taken hint */	\
 			  "jna %l[error]\n\t"				\
 			  _ASM_EXTABLE(1b, %l[fault])			\
-			  : : op1, op2 : "cc" : error, fault);		\
+			  : : op1, op2 : "cc", "memory" : error, fault);\
 	return;								\
 error:									\
 	instrumentation_begin();					\

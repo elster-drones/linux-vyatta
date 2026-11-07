@@ -295,8 +295,6 @@ static const struct software_node *ssam_node_group_sl6[] = {
 /* Devices for Surface Laptop 7. */
 static const struct software_node *ssam_node_group_sl7[] = {
 	&ssam_node_root,
-	&ssam_node_bat_ac,
-	&ssam_node_bat_main,
 	&ssam_node_tmp_perf_profile_with_fan,
 	&ssam_node_fan_speed,
 	&ssam_node_hid_sam_keyboard,
@@ -371,7 +369,7 @@ static const struct software_node *ssam_node_group_sp8[] = {
 	NULL,
 };
 
-/* Devices for Surface Pro 9 (Intel/x86) and 10 */
+/* Devices for Surface Pro 9, 10 and 11 (Intel/x86) */
 static const struct software_node *ssam_node_group_sp9[] = {
 	&ssam_node_root,
 	&ssam_node_hub_kip,
@@ -429,6 +427,9 @@ static const struct acpi_device_id ssam_platform_hub_acpi_match[] = {
 
 	/* Surface Pro 10 */
 	{ "MSHW0510", (unsigned long)ssam_node_group_sp9 },
+
+	/* Surface Pro 11 */
+	{ "MSHW0583", (unsigned long)ssam_node_group_sp9 },
 
 	/* Surface Book 2 */
 	{ "MSHW0107", (unsigned long)ssam_node_group_gen5 },

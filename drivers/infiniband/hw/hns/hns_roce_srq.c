@@ -51,7 +51,7 @@ static void hns_roce_ib_srq_event(struct hns_roce_srq *srq,
 			break;
 		default:
 			dev_err(hr_dev->dev,
-			   "hns_roce:Unexpected event type 0x%x on SRQ %06lx\n",
+			   "hns_roce:Unexpected event type %d on SRQ %06lx\n",
 			   event_type, srq->srqn);
 			return;
 		}
@@ -104,7 +104,7 @@ static int hns_roce_create_srqc(struct hns_roce_dev *hr_dev,
 	ret = hns_roce_create_hw_ctx(hr_dev, mailbox, HNS_ROCE_CMD_CREATE_SRQ,
 				     srq->srqn);
 	if (ret)
-		ibdev_err(ibdev, "failed to config SRQC, ret = %d.\n", ret);
+		ibdev_err_ratelimited(ibdev, "failed to config SRQC, ret = %d.\n", ret);
 
 err_mbox:
 	hns_roce_free_cmd_mailbox(hr_dev, mailbox);

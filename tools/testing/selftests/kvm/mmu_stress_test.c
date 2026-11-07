@@ -18,6 +18,7 @@
 #include "ucall_common.h"
 
 static bool mprotect_ro_done;
+static bool all_vcpus_hit_ro_fault;
 
 static void guest_code(uint64_t start_gpa, uint64_t end_gpa, uint64_t stride)
 {
@@ -36,9 +37,9 @@ static void guest_code(uint64_t start_gpa, uint64_t end_gpa, uint64_t stride)
 
 	/*
 	 * Write to the region while mprotect(PROT_READ) is underway.  Keep
-	 * looping until the memory is guaranteed to be read-only, otherwise
-	 * vCPUs may complete their writes and advance to the next stage
-	 * prematurely.
+	 * looping until the memory is guaranteed to be read-only and a fault
+	 * has occurred, otherwise vCPUs may complete their writes and advance
+	 * to the next stage prematurely.
 	 *
 	 * For architectures that support skipping the faulting instruction,
 	 * generate the store via inline assembly to ensure the exact length
@@ -56,7 +57,7 @@ static void guest_code(uint64_t start_gpa, uint64_t end_gpa, uint64_t stride)
 #else
 			vcpu_arch_put_guest(*((volatile uint64_t *)gpa), gpa);
 #endif
-	} while (!READ_ONCE(mprotect_ro_done));
+	} while (!READ_ONCE(mprotect_ro_done) || !READ_ONCE(all_vcpus_hit_ro_fault));
 
 	/*
 	 * Only architectures that write the entire range can explicitly sync,
@@ -81,6 +82,7 @@ struct vcpu_info {
 
 static int nr_vcpus;
 static atomic_t rendezvous;
+static atomic_t nr_ro_faults;
 
 static void rendezvous_with_boss(void)
 {
@@ -148,11 +150,15 @@ static void *vcpu_worker(void *data)
 	 * be stuck on the faulting instruction for other architectures.  Go to
 	 * stage 3 without a rendezvous
 	 */
-	do {
-		r = _vcpu_run(vcpu);
-	} while (!r);
+	r = _vcpu_run(vcpu);
 	TEST_ASSERT(r == -1 && errno == EFAULT,
 		    "Expected EFAULT on write to RO memory, got r = %d, errno = %d", r, errno);
+
+	atomic_inc(&nr_ro_faults);
+	if (atomic_read(&nr_ro_faults) == nr_vcpus) {
+		WRITE_ONCE(all_vcpus_hit_ro_fault, true);
+		sync_global_to_guest(vm, all_vcpus_hit_ro_fault);
+	}
 
 #if defined(__x86_64__) || defined(__aarch64__)
 	/*
@@ -333,8 +339,7 @@ int main(int argc, char *argv[])
 	TEST_ASSERT(max_gpa > (4 * slot_size), "MAXPHYADDR <4gb ");
 
 	fd = kvm_memfd_alloc(slot_size, hugepages);
-	mem = mmap(NULL, slot_size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
-	TEST_ASSERT(mem != MAP_FAILED, "mmap() failed");
+	mem = kvm_mmap(slot_size, PROT_READ | PROT_WRITE, MAP_SHARED, fd);
 
 	TEST_ASSERT(!madvise(mem, slot_size, MADV_NOHUGEPAGE), "madvise() failed");
 
@@ -378,7 +383,6 @@ int main(int argc, char *argv[])
 	rendezvous_with_vcpus(&time_run2, "run 2");
 
 	mprotect(mem, slot_size, PROT_READ);
-	usleep(10);
 	mprotect_ro_done = true;
 	sync_global_to_guest(vm, mprotect_ro_done);
 
@@ -408,7 +412,7 @@ int main(int argc, char *argv[])
 	for (slot = (slot - 1) & ~1ull; slot >= first_slot; slot -= 2)
 		vm_set_user_memory_region(vm, slot, 0, 0, 0, NULL);
 
-	munmap(mem, slot_size / 2);
+	kvm_munmap(mem, slot_size / 2);
 
 	/* Sanity check that the vCPUs actually ran. */
 	for (i = 0; i < nr_vcpus; i++)

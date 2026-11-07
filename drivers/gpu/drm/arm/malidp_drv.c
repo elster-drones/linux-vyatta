@@ -306,10 +306,10 @@ malidp_verify_afbc_framebuffer_caps(struct drm_device *dev,
 static bool
 malidp_verify_afbc_framebuffer_size(struct drm_device *dev,
 				    struct drm_file *file,
+				    const struct drm_format_info *info,
 				    const struct drm_mode_fb_cmd2 *mode_cmd)
 {
 	int n_superblocks = 0;
-	const struct drm_format_info *info;
 	struct drm_gem_object *objs = NULL;
 	u32 afbc_superblock_size = 0, afbc_superblock_height = 0;
 	u32 afbc_superblock_width = 0, afbc_size = 0;
@@ -324,8 +324,6 @@ malidp_verify_afbc_framebuffer_size(struct drm_device *dev,
 		DRM_DEBUG_KMS("AFBC superblock size is not supported\n");
 		return false;
 	}
-
-	info = drm_get_format_info(dev, mode_cmd);
 
 	n_superblocks = (mode_cmd->width / afbc_superblock_width) *
 		(mode_cmd->height / afbc_superblock_height);
@@ -366,24 +364,26 @@ malidp_verify_afbc_framebuffer_size(struct drm_device *dev,
 
 static bool
 malidp_verify_afbc_framebuffer(struct drm_device *dev, struct drm_file *file,
+			       const struct drm_format_info *info,
 			       const struct drm_mode_fb_cmd2 *mode_cmd)
 {
 	if (malidp_verify_afbc_framebuffer_caps(dev, mode_cmd))
-		return malidp_verify_afbc_framebuffer_size(dev, file, mode_cmd);
+		return malidp_verify_afbc_framebuffer_size(dev, file, info, mode_cmd);
 
 	return false;
 }
 
 static struct drm_framebuffer *
 malidp_fb_create(struct drm_device *dev, struct drm_file *file,
+		 const struct drm_format_info *info,
 		 const struct drm_mode_fb_cmd2 *mode_cmd)
 {
 	if (mode_cmd->modifier[0]) {
-		if (!malidp_verify_afbc_framebuffer(dev, file, mode_cmd))
+		if (!malidp_verify_afbc_framebuffer(dev, file, info, mode_cmd))
 			return ERR_PTR(-EINVAL);
 	}
 
-	return drm_gem_fb_create(dev, file, mode_cmd);
+	return drm_gem_fb_create(dev, file, info, mode_cmd);
 }
 
 static const struct drm_mode_config_funcs malidp_mode_config_funcs = {
@@ -669,6 +669,11 @@ static int malidp_runtime_pm_suspend(struct device *dev)
 	struct drm_device *drm = dev_get_drvdata(dev);
 	struct malidp_drm *malidp = drm_to_malidp(drm);
 	struct malidp_hw_device *hwdev = malidp->dev;
+	struct clk_bulk_data clks[] = {
+		{ .clk = hwdev->pclk },
+		{ .clk = hwdev->aclk },
+		{ .clk = hwdev->mclk },
+	};
 
 	/* we can only suspend if the hardware is in config mode */
 	WARN_ON(!hwdev->hw->in_config_mode(hwdev));
@@ -676,9 +681,7 @@ static int malidp_runtime_pm_suspend(struct device *dev)
 	malidp_se_irq_fini(hwdev);
 	malidp_de_irq_fini(hwdev);
 	hwdev->pm_suspended = true;
-	clk_disable_unprepare(hwdev->mclk);
-	clk_disable_unprepare(hwdev->aclk);
-	clk_disable_unprepare(hwdev->pclk);
+	clk_bulk_disable_unprepare(ARRAY_SIZE(clks), clks);
 
 	return 0;
 }
@@ -688,10 +691,17 @@ static int malidp_runtime_pm_resume(struct device *dev)
 	struct drm_device *drm = dev_get_drvdata(dev);
 	struct malidp_drm *malidp = drm_to_malidp(drm);
 	struct malidp_hw_device *hwdev = malidp->dev;
+	struct clk_bulk_data clks[] = {
+		{ .clk = hwdev->pclk },
+		{ .clk = hwdev->aclk },
+		{ .clk = hwdev->mclk },
+	};
+	int err;
 
-	clk_prepare_enable(hwdev->pclk);
-	clk_prepare_enable(hwdev->aclk);
-	clk_prepare_enable(hwdev->mclk);
+	err = clk_bulk_prepare_enable(ARRAY_SIZE(clks), clks);
+	if (err)
+		return err;
+
 	hwdev->pm_suspended = false;
 	malidp_de_irq_hw_init(hwdev);
 	malidp_se_irq_hw_init(hwdev);

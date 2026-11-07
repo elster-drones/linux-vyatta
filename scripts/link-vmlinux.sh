@@ -31,6 +31,7 @@ set -e
 LD="$1"
 KBUILD_LDFLAGS="$2"
 LDFLAGS_vmlinux="$3"
+VMLINUX="$4"
 
 is_enabled() {
 	grep -q "^$1=y" include/config/auto.conf
@@ -72,10 +73,7 @@ vmlinux_link()
 		objs="${objs} .builtin-dtbs.o"
 	fi
 
-	if is_enabled CONFIG_MODULES; then
-		objs="${objs} .vmlinux.export.o"
-	fi
-
+	objs="${objs} .vmlinux.export.o"
 	objs="${objs} init/version-timestamp.o"
 
 	if [ "${SRCARCH}" = "um" ]; then
@@ -97,8 +95,8 @@ vmlinux_link()
 		ldflags="${ldflags} ${wl}--strip-debug"
 	fi
 
-	if is_enabled CONFIG_VMLINUX_MAP; then
-		ldflags="${ldflags} ${wl}-Map=${output}.map"
+	if [ -n "${generate_map}" ];  then
+		ldflags="${ldflags} ${wl}-Map=vmlinux.map"
 	fi
 
 	${ld} ${ldflags} -o ${output}					\
@@ -135,6 +133,18 @@ gen_btf()
 	btf_vmlinux_bin_o=${btf_data}
 }
 
+# Check if kallsymso_prev and kallsymso differ
+# If symbol sizes within ${kallsymso} change, any symbols within vmlinux are
+# likely to shift, invalidating ${kallsymso}.
+# Since file size can remain unchanged even if symbol sizes change, compare the
+# actual symbols instead of relying on file size only.
+kallsymso_changed()
+{
+	${NM} -n "${kallsymso_prev}" > "${kallsymso_prev}.sym"
+	${NM} -n "${kallsymso}" > "${kallsymso}.sym"
+	! cmp -s "${kallsymso_prev}.sym" "${kallsymso}.sym"
+}
+
 # Create ${2}.o file with all symbols from the ${1} object file
 kallsyms()
 {
@@ -144,10 +154,6 @@ kallsyms()
 		kallsymopt="${kallsymopt} --all-symbols"
 	fi
 
-	if is_enabled CONFIG_KALLSYMS_ABSOLUTE_PERCPU; then
-		kallsymopt="${kallsymopt} --absolute-percpu"
-	fi
-
 	info KSYMS "${2}.S"
 	scripts/kallsyms ${kallsymopt} "${1}" > "${2}.S"
 
@@ -155,6 +161,7 @@ kallsyms()
 	${CC} ${NOSTDINC_FLAGS} ${LINUXINCLUDE} ${KBUILD_CPPFLAGS} \
 	      ${KBUILD_AFLAGS} ${KBUILD_AFLAGS_KERNEL} -c -o "${2}.o" "${2}.S"
 
+	kallsymso_prev="${kallsymso:-}"
 	kallsymso=${2}.o
 }
 
@@ -177,12 +184,14 @@ mksysmap()
 
 sorttable()
 {
-	${objtree}/scripts/sorttable ${1}
+	${NM} -S ${1} > .tmp_vmlinux.nm-sort
+	${objtree}/scripts/sorttable -s .tmp_vmlinux.nm-sort ${1}
 }
 
 cleanup()
 {
 	rm -f .btf.*
+	rm -f .tmp_vmlinux.nm-sort
 	rm -f System.map
 	rm -f vmlinux
 	rm -f vmlinux.map
@@ -210,6 +219,7 @@ fi
 btf_vmlinux_bin_o=
 kallsymso=
 strip_debug=
+generate_map=
 
 if is_enabled CONFIG_KALLSYMS; then
 	true > .tmp_vmlinux0.syms
@@ -270,7 +280,12 @@ if is_enabled CONFIG_KALLSYMS; then
 	sysmap_and_kallsyms .tmp_vmlinux2
 	size2=$(${CONFIG_SHELL} "${srctree}/scripts/file-size.sh" ${kallsymso})
 
-	if [ $size1 -ne $size2 ] || [ -n "${KALLSYMS_EXTRA_PASS}" ]; then
+	# Due to alignment, file size of the kallsymso object file might remain
+	# unchanged even if individual symbols within change size. Changed
+	# symbol sizes can still shift other symbols, though. Therefore, don't
+	# rely on file size alone.
+	if [ $size1 -ne $size2 ] || kallsymso_changed || \
+			[ -n "${KALLSYMS_EXTRA_PASS}" ]; then
 		vmlinux_link .tmp_vmlinux3
 		sysmap_and_kallsyms .tmp_vmlinux3
 	fi
@@ -278,23 +293,27 @@ fi
 
 strip_debug=
 
-vmlinux_link vmlinux
+if is_enabled CONFIG_VMLINUX_MAP; then
+	generate_map=1
+fi
+
+vmlinux_link "${VMLINUX}"
 
 # fill in BTF IDs
 if is_enabled CONFIG_DEBUG_INFO_BTF; then
-	info BTFIDS vmlinux
+	info BTFIDS "${VMLINUX}"
 	RESOLVE_BTFIDS_ARGS=""
 	if is_enabled CONFIG_WERROR; then
 		RESOLVE_BTFIDS_ARGS=" --fatal_warnings "
 	fi
-	${RESOLVE_BTFIDS} ${RESOLVE_BTFIDS_ARGS} vmlinux
+	${RESOLVE_BTFIDS} ${RESOLVE_BTFIDS_ARGS} "${VMLINUX}"
 fi
 
-mksysmap vmlinux System.map
+mksysmap "${VMLINUX}" System.map
 
 if is_enabled CONFIG_BUILDTIME_TABLE_SORT; then
-	info SORTTAB vmlinux
-	if ! sorttable vmlinux; then
+	info SORTTAB "${VMLINUX}"
+	if ! sorttable "${VMLINUX}"; then
 		echo >&2 Failed to sort kernel tables
 		exit 1
 	fi
@@ -310,4 +329,4 @@ if is_enabled CONFIG_KALLSYMS; then
 fi
 
 # For fixdep
-echo "vmlinux: $0" > .vmlinux.d
+echo "${VMLINUX}: $0" > ".${VMLINUX}.d"

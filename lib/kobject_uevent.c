@@ -223,9 +223,9 @@ int kobject_synth_uevent(struct kobject *kobj, const char *buf, size_t count)
 out:
 	if (r) {
 		devpath = kobject_get_path(kobj, GFP_KERNEL);
-		pr_warn("synth uevent: %s: %s\n",
-		       devpath ?: "unknown device",
-		       msg ?: "failed to send uevent");
+		pr_warn_ratelimited("synth uevent: %s: %s\n",
+				    devpath ?: "unknown device",
+				    msg ?: "failed to send uevent");
 		kfree(devpath);
 	}
 	return r;
@@ -825,4 +825,24 @@ static int __init kobject_uevent_init(void)
 
 
 postcore_initcall(kobject_uevent_init);
+#endif
+
+#ifdef CONFIG_UEVENT_HELPER
+static const struct ctl_table uevent_helper_sysctl_table[] = {
+	{
+		.procname	= "hotplug",
+		.data		= &uevent_helper,
+		.maxlen		= UEVENT_HELPER_PATH_LEN,
+		.mode		= 0644,
+		.proc_handler	= proc_dostring,
+	},
+};
+
+static int __init init_uevent_helper_sysctl(void)
+{
+	register_sysctl_init("kernel", uevent_helper_sysctl_table);
+	return 0;
+}
+
+postcore_initcall(init_uevent_helper_sysctl);
 #endif

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT
 /*
  * Copyright 2015 Advanced Micro Devices, Inc.
  *
@@ -55,16 +56,24 @@ static u32 edid_extract_panel_id(struct edid *edid)
 	       (u32)EDID_PRODUCT_ID(edid);
 }
 
-static void apply_edid_quirks(struct edid *edid, struct dc_edid_caps *edid_caps)
+static void apply_edid_quirks(struct dc_link *link, struct edid *edid,
+			      struct dc_edid_caps *edid_caps)
 {
+	struct amdgpu_dm_connector *aconnector = link->priv;
+	struct drm_device *dev = aconnector->base.dev;
 	uint32_t panel_id = edid_extract_panel_id(edid);
 
 	switch (panel_id) {
+	/* Workaround for monitors that need a delay after detecting the link */
+	case drm_edid_encode_panel_id('G', 'B', 'T', 0x3215):
+		drm_dbg_driver(dev, "Add 10s delay for link detection for panel id %X\n", panel_id);
+		edid_caps->panel_patch.wait_after_dpcd_poweroff_ms = 10000;
+		break;
 	/* Workaround for some monitors which does not work well with FAMS */
 	case drm_edid_encode_panel_id('S', 'A', 'M', 0x0E5E):
 	case drm_edid_encode_panel_id('S', 'A', 'M', 0x7053):
 	case drm_edid_encode_panel_id('S', 'A', 'M', 0x71AC):
-		DRM_DEBUG_DRIVER("Disabling FAMS on monitor with panel id %X\n", panel_id);
+		drm_dbg_driver(dev, "Disabling FAMS on monitor with panel id %X\n", panel_id);
 		edid_caps->panel_patch.disable_fams = true;
 		break;
 	/* Workaround for some monitors that do not clear DPCD 0x317 if FreeSync is unsupported */
@@ -73,12 +82,29 @@ static void apply_edid_quirks(struct edid *edid, struct dc_edid_caps *edid_caps)
 	case drm_edid_encode_panel_id('B', 'O', 'E', 0x092A):
 	case drm_edid_encode_panel_id('L', 'G', 'D', 0x06D1):
 	case drm_edid_encode_panel_id('M', 'S', 'F', 0x1003):
-		DRM_DEBUG_DRIVER("Clearing DPCD 0x317 on monitor with panel id %X\n", panel_id);
+		drm_dbg_driver(dev, "Clearing DPCD 0x317 on monitor with panel id %X\n", panel_id);
 		edid_caps->panel_patch.remove_sink_ext_caps = true;
 		break;
 	case drm_edid_encode_panel_id('S', 'D', 'C', 0x4154):
-		DRM_DEBUG_DRIVER("Disabling VSC on monitor with panel id %X\n", panel_id);
+	case drm_edid_encode_panel_id('S', 'D', 'C', 0x4171):
+		drm_dbg_driver(dev, "Disabling VSC on monitor with panel id %X\n", panel_id);
 		edid_caps->panel_patch.disable_colorimetry = true;
+		break;
+	/* Workaround for monitors that get corrupted by the PHY SSC reduction */
+	case drm_edid_encode_panel_id('D', 'E', 'L', 0x4147):
+		drm_dbg_driver(dev, "Skip PHY SSC reduction on panel id %X\n", panel_id);
+		link->wa_flags.skip_phy_ssc_reduction = true;
+		break;
+	/*
+	 * Workaround for Apple Studio Display which exposes a 2x1 tiled panel
+	 * over two SST DP links. Hide the secondary tile from userspace so
+	 * compositors drive a single 5K stream on the primary link only.
+	 */
+	case drm_edid_encode_panel_id('A', 'P', 'P', 0xAE3A):
+	case drm_edid_encode_panel_id('A', 'P', 'P', 0xAE42):
+	case drm_edid_encode_panel_id('A', 'P', 'P', 0xAE46):
+		drm_dbg_driver(dev, "Hiding secondary tile on panel id %X\n", panel_id);
+		edid_caps->panel_patch.disable_second_tile = true;
 		break;
 	default:
 		return;
@@ -130,7 +156,10 @@ enum dc_edid_status dm_helpers_parse_edid_caps(
 
 	edid_caps->edid_hdmi = connector->display_info.is_hdmi;
 
-	apply_edid_quirks(edid_buf, edid_caps);
+	if (edid_caps->edid_hdmi)
+		edid_caps->qs_bit = connector->display_info.rgb_quant_range_selectable;
+
+	apply_edid_quirks(link, edid_buf, edid_caps);
 
 	sad_count = drm_edid_to_sad((struct edid *) edid->raw_edid, &sads);
 	if (sad_count <= 0)
@@ -624,6 +653,19 @@ bool dm_helpers_submit_i2c(
 	return result;
 }
 
+bool dm_helpers_execute_fused_io(
+		struct dc_context *ctx,
+		struct dc_link *link,
+		union dmub_rb_cmd *commands,
+		uint8_t count,
+		uint32_t timeout_us
+)
+{
+	struct amdgpu_device *dev = ctx->driver_context;
+
+	return amdgpu_dm_execute_fused_io(dev, link, commands, count, timeout_us);
+}
+
 static bool execute_synaptics_rc_command(struct drm_dp_aux *aux,
 		bool is_write_cmd,
 		unsigned char cmd,
@@ -912,7 +954,7 @@ dm_helpers_probe_acpi_edid(void *data, u8 *buf, unsigned int block, size_t len)
 {
 	struct drm_connector *connector = data;
 	struct acpi_device *acpidev = ACPI_COMPANION(connector->dev->dev);
-	unsigned char start = block * EDID_LENGTH;
+	unsigned short start = block * EDID_LENGTH;
 	struct edid *edid;
 	int r;
 
@@ -976,8 +1018,8 @@ enum dc_edid_status dm_helpers_read_local_edid(
 	struct amdgpu_dm_connector *aconnector = link->priv;
 	struct drm_connector *connector = &aconnector->base;
 	struct i2c_adapter *ddc;
-	int retry = 3;
-	enum dc_edid_status edid_status;
+	int retry = 25;
+	enum dc_edid_status edid_status = EDID_NO_RESPONSE;
 	const struct drm_edid *drm_edid;
 	const struct edid *edid;
 
@@ -1007,9 +1049,13 @@ enum dc_edid_status dm_helpers_read_local_edid(
 		}
 
 		if (!drm_edid)
-			return EDID_NO_RESPONSE;
+			continue;
 
 		edid = drm_edid_raw(drm_edid); // FIXME: Get rid of drm_edid_raw()
+		if (!edid ||
+		    edid->extensions >= sizeof(sink->dc_edid.raw_edid) / EDID_LENGTH)
+			return EDID_BAD_INPUT;
+
 		sink->dc_edid.length = EDID_LENGTH * (edid->extensions + 1);
 		memmove(sink->dc_edid.raw_edid, (uint8_t *)edid, sink->dc_edid.length);
 
@@ -1021,7 +1067,7 @@ enum dc_edid_status dm_helpers_read_local_edid(
 						&sink->dc_edid,
 						&sink->edid_caps);
 
-	} while (edid_status == EDID_BAD_CHECKSUM && --retry > 0);
+	} while ((edid_status == EDID_BAD_CHECKSUM || edid_status == EDID_NO_RESPONSE) && --retry > 0);
 
 	if (edid_status != EDID_OK)
 		DRM_ERROR("EDID err: %d, on connector: %s",
@@ -1143,12 +1189,13 @@ void dm_helpers_free_gpu_mem(
 
 bool dm_helpers_dmub_outbox_interrupt_control(struct dc_context *ctx, bool enable)
 {
+	struct amdgpu_device *adev = ctx->driver_context;
 	enum dc_irq_source irq_source;
 	bool ret;
 
 	irq_source = DC_IRQ_SOURCE_DMCUB_OUTBOX;
 
-	ret = dc_interrupt_set(ctx->dc, irq_source, enable);
+	ret = amdgpu_dm_irq_set(adev, irq_source, enable);
 
 	DRM_DEBUG_DRIVER("Dmub trace irq %sabling: r=%d\n",
 			 enable ? "en" : "dis", ret);

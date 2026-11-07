@@ -55,6 +55,7 @@ struct qnap_mcu_reply {
  * @reply:	Reply data structure
  * @variant:	Device variant specific information
  * @version:	MCU firmware version
+ * @rx:		Receive buffer the reply is assembled in
  */
 struct qnap_mcu {
 	struct serdev_device *serdev;
@@ -62,6 +63,7 @@ struct qnap_mcu {
 	struct qnap_mcu_reply reply;
 	const struct qnap_mcu_variant *variant;
 	u8 version[QNAP_MCU_VERSION_LEN];
+	u8 rx[QNAP_MCU_RX_BUFFER_SIZE];
 };
 
 /*
@@ -146,44 +148,43 @@ int qnap_mcu_exec(struct qnap_mcu *mcu,
 		  const u8 *cmd_data, size_t cmd_data_size,
 		  u8 *reply_data, size_t reply_data_size)
 {
-	unsigned char rx[QNAP_MCU_RX_BUFFER_SIZE];
 	size_t length = reply_data_size + QNAP_MCU_CHECKSUM_SIZE;
 	struct qnap_mcu_reply *reply = &mcu->reply;
 	int ret = 0;
+	u8 crc;
 
-	if (length > sizeof(rx)) {
+	if (length > sizeof(mcu->rx)) {
 		dev_err(&mcu->serdev->dev, "expected data too big for receive buffer");
 		return -EINVAL;
 	}
 
-	mutex_lock(&mcu->bus_lock);
+	guard(mutex)(&mcu->bus_lock);
 
-	reply->data = rx,
-	reply->length = length,
-	reply->received = 0,
+	reply->data = mcu->rx;
+	reply->length = length;
+	reply->received = 0;
 	reinit_completion(&reply->done);
 
-	qnap_mcu_write(mcu, cmd_data, cmd_data_size);
+	ret = qnap_mcu_write(mcu, cmd_data, cmd_data_size);
+	if (ret < 0)
+		return ret;
 
 	serdev_device_wait_until_sent(mcu->serdev, msecs_to_jiffies(QNAP_MCU_TIMEOUT_MS));
 
 	if (!wait_for_completion_timeout(&reply->done, msecs_to_jiffies(QNAP_MCU_TIMEOUT_MS))) {
 		dev_err(&mcu->serdev->dev, "Command timeout\n");
-		ret = -ETIMEDOUT;
-	} else {
-		u8 crc = qnap_mcu_csum(rx, reply_data_size);
-
-		if (crc != rx[reply_data_size]) {
-			dev_err(&mcu->serdev->dev,
-				"Invalid Checksum received\n");
-			ret = -EIO;
-		} else {
-			memcpy(reply_data, rx, reply_data_size);
-		}
+		return -ETIMEDOUT;
 	}
 
-	mutex_unlock(&mcu->bus_lock);
-	return ret;
+	crc = qnap_mcu_csum(mcu->rx, reply_data_size);
+	if (crc != mcu->rx[reply_data_size]) {
+		dev_err(&mcu->serdev->dev, "Invalid Checksum received\n");
+		return -EIO;
+	}
+
+	memcpy(reply_data, mcu->rx, reply_data_size);
+
+	return 0;
 }
 EXPORT_SYMBOL_GPL(qnap_mcu_exec);
 
@@ -246,6 +247,14 @@ static int qnap_mcu_power_off(struct sys_off_data *data)
 
 	return NOTIFY_DONE;
 }
+
+static const struct qnap_mcu_variant qnap_ts233_mcu = {
+	.baud_rate = 115200,
+	.num_drives = 2,
+	.fan_pwm_min = 51,  /* Specified in original model.conf */
+	.fan_pwm_max = 255,
+	.usb_led = true,
+};
 
 static const struct qnap_mcu_variant qnap_ts433_mcu = {
 	.baud_rate = 115200,
@@ -319,6 +328,7 @@ static int qnap_mcu_probe(struct serdev_device *serdev)
 }
 
 static const struct of_device_id qnap_mcu_dt_ids[] = {
+	{ .compatible = "qnap,ts233-mcu", .data = &qnap_ts233_mcu },
 	{ .compatible = "qnap,ts433-mcu", .data = &qnap_ts433_mcu },
 	{ /* sentinel */ }
 };

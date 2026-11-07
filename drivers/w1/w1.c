@@ -149,7 +149,7 @@ static const struct bin_attribute *const w1_slave_bin_attrs[] = {
 };
 
 static const struct attribute_group w1_slave_default_group = {
-	.bin_attrs_new = w1_slave_bin_attrs,
+	.bin_attrs = w1_slave_bin_attrs,
 };
 
 static const struct attribute_group *w1_slave_default_groups[] = {
@@ -758,8 +758,6 @@ int w1_attach_slave_device(struct w1_master *dev, struct w1_reg_num *rn)
 	if (err < 0) {
 		dev_err(&dev->dev, "%s: Attaching %s failed.\n", __func__,
 			 sl->name);
-		dev->slave_count--;
-		w1_family_put(sl->family);
 		atomic_dec(&sl->master->refcnt);
 		kfree(sl);
 		return err;

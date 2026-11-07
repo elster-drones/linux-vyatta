@@ -646,19 +646,19 @@ filelayout_decode_layout(struct pnfs_layout_hdr *flo,
 {
 	struct xdr_stream stream;
 	struct xdr_buf buf;
-	struct page *scratch;
+	struct folio *scratch;
 	__be32 *p;
 	uint32_t nfl_util;
 	int i;
 
 	dprintk("%s: set_layout_map Begin\n", __func__);
 
-	scratch = alloc_page(gfp_flags);
+	scratch = folio_alloc(gfp_flags, 0);
 	if (!scratch)
 		return -ENOMEM;
 
 	xdr_init_decode_pages(&stream, &buf, lgr->layoutp->pages, lgr->layoutp->len);
-	xdr_set_scratch_page(&stream, scratch);
+	xdr_set_scratch_folio(&stream, scratch);
 
 	/* 20 = ufl_util (4), first_stripe_index (4), pattern_offset (8),
 	 * num_fh (4) */
@@ -724,11 +724,11 @@ filelayout_decode_layout(struct pnfs_layout_hdr *flo,
 			fl->fh_array[i]->size);
 	}
 
-	__free_page(scratch);
+	folio_put(scratch);
 	return 0;
 
 out_err:
-	__free_page(scratch);
+	folio_put(scratch);
 	return -EIO;
 }
 
@@ -778,6 +778,8 @@ filelayout_alloc_lseg(struct pnfs_layout_hdr *layoutid,
 static bool
 filelayout_lseg_is_striped(const struct nfs4_filelayout_segment *flseg)
 {
+	if (flseg->dsaddr)
+		return flseg->dsaddr->stripe_count > 1;
 	return flseg->num_fh > 1;
 }
 
@@ -794,7 +796,7 @@ filelayout_pg_test(struct nfs_pageio_descriptor *pgio, struct nfs_page *prev,
 	unsigned int size;
 	u64 p_stripe, r_stripe;
 	u32 stripe_offset;
-	u64 segment_offset = pgio->pg_lseg->pls_range.offset;
+	u64 pattern_offset = FILELAYOUT_LSEG(pgio->pg_lseg)->pattern_offset;
 	u32 stripe_unit = FILELAYOUT_LSEG(pgio->pg_lseg)->stripe_unit;
 
 	/* calls nfs_generic_pg_test */
@@ -806,8 +808,8 @@ filelayout_pg_test(struct nfs_pageio_descriptor *pgio, struct nfs_page *prev,
 
 	/* see if req and prev are in the same stripe */
 	if (prev) {
-		p_stripe = (u64)req_offset(prev) - segment_offset;
-		r_stripe = (u64)req_offset(req) - segment_offset;
+		p_stripe = (u64)req_offset(prev) - pattern_offset;
+		r_stripe = (u64)req_offset(req) - pattern_offset;
 		do_div(p_stripe, stripe_unit);
 		do_div(r_stripe, stripe_unit);
 
@@ -816,7 +818,7 @@ filelayout_pg_test(struct nfs_pageio_descriptor *pgio, struct nfs_page *prev,
 	}
 
 	/* calculate remaining bytes in the current stripe */
-	div_u64_rem((u64)req_offset(req) - segment_offset,
+	div_u64_rem((u64)req_offset(req) - pattern_offset,
 			stripe_unit,
 			&stripe_offset);
 	WARN_ON_ONCE(stripe_offset > stripe_unit);

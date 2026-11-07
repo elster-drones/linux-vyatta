@@ -117,7 +117,7 @@ int wl1271_recalc_rx_streaming(struct wl1271 *wl, struct wl12xx_vif *wlvif)
 	else {
 		ret = wl1271_set_rx_streaming(wl, wlvif, false);
 		/* don't cancel_work_sync since we might deadlock */
-		del_timer_sync(&wlvif->rx_streaming_timer);
+		timer_delete_sync(&wlvif->rx_streaming_timer);
 	}
 out:
 	return ret;
@@ -189,7 +189,8 @@ out:
 
 static void wl1271_rx_streaming_timer(struct timer_list *t)
 {
-	struct wl12xx_vif *wlvif = from_timer(wlvif, t, rx_streaming_timer);
+	struct wl12xx_vif *wlvif = timer_container_of(wlvif, t,
+						      rx_streaming_timer);
 	struct wl1271 *wl = wlvif->wl;
 	ieee80211_queue_work(wl->hw, &wlvif->rx_streaming_disable_work);
 }
@@ -1879,6 +1880,8 @@ static int __maybe_unused wl1271_op_resume(struct ieee80211_hw *hw)
 		     wl->wow_enabled);
 	WARN_ON(!wl->wow_enabled);
 
+	mutex_lock(&wl->mutex);
+
 	ret = pm_runtime_force_resume(wl->dev);
 	if (ret < 0) {
 		wl1271_error("ELP wakeup failure!");
@@ -1894,8 +1897,6 @@ static int __maybe_unused wl1271_op_resume(struct ieee80211_hw *hw)
 	if (test_and_clear_bit(WL1271_FLAG_PENDING_WORK, &wl->flags))
 		run_irq_work = true;
 	spin_unlock_irqrestore(&wl->wl_lock, flags);
-
-	mutex_lock(&wl->mutex);
 
 	/* test the recovery flag before calling any SDIO functions */
 	pending_recovery = test_bit(WL1271_FLAG_RECOVERY_IN_PROGRESS,
@@ -2841,7 +2842,7 @@ deinit:
 unlock:
 	mutex_unlock(&wl->mutex);
 
-	del_timer_sync(&wlvif->rx_streaming_timer);
+	timer_delete_sync(&wlvif->rx_streaming_timer);
 	cancel_work_sync(&wlvif->rx_streaming_enable_work);
 	cancel_work_sync(&wlvif->rx_streaming_disable_work);
 	cancel_work_sync(&wlvif->rc_update_work);
@@ -3165,7 +3166,7 @@ static int wl12xx_config_vif(struct wl1271 *wl, struct wl12xx_vif *wlvif,
 	return 0;
 }
 
-static int wl1271_op_config(struct ieee80211_hw *hw, u32 changed)
+static int wl1271_op_config(struct ieee80211_hw *hw, int radio_idx, u32 changed)
 {
 	struct wl1271 *wl = hw->priv;
 	struct wl12xx_vif *wlvif;
@@ -3718,10 +3719,8 @@ void wlcore_regdomain_config(struct wl1271 *wl)
 		goto out;
 
 	ret = wlcore_cmd_regdomain_config_locked(wl);
-	if (ret < 0) {
+	if (ret < 0)
 		wl12xx_queue_recovery_work(wl);
-		goto out;
-	}
 
 	pm_runtime_mark_last_busy(wl->dev);
 	pm_runtime_put_autosuspend(wl->dev);
@@ -3894,7 +3893,8 @@ out:
 	return 0;
 }
 
-static int wl1271_op_set_frag_threshold(struct ieee80211_hw *hw, u32 value)
+static int wl1271_op_set_frag_threshold(struct ieee80211_hw *hw,
+					int radio_idx, u32 value)
 {
 	struct wl1271 *wl = hw->priv;
 	int ret = 0;
@@ -3923,7 +3923,8 @@ out:
 	return ret;
 }
 
-static int wl1271_op_set_rts_threshold(struct ieee80211_hw *hw, u32 value)
+static int wl1271_op_set_rts_threshold(struct ieee80211_hw *hw, int radio_idx,
+				       u32 value)
 {
 	struct wl1271 *wl = hw->priv;
 	struct wl12xx_vif *wlvif;
@@ -6834,8 +6835,10 @@ void wlcore_remove(struct platform_device *pdev)
 
 	if (pdev_data->family && pdev_data->family->nvs_name)
 		wait_for_completion(&wl->nvs_loading_complete);
-	if (!wl->initialized)
+	if (!wl->initialized) {
+		pm_runtime_put_noidle(wl->dev);
 		return;
+	}
 
 	if (wl->wakeirq >= 0) {
 		dev_pm_clear_wake_irq(wl->dev);

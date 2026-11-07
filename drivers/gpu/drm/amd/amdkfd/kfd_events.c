@@ -107,6 +107,9 @@ static int allocate_event_notification_slot(struct kfd_process *p,
 	}
 
 	if (restore_id) {
+		if (*restore_id >= KFD_SIGNAL_EVENT_LIMIT)
+			return -EINVAL;
+
 		id = idr_alloc(&p->event_idr, ev, *restore_id, *restore_id + 1,
 				GFP_KERNEL);
 	} else {
@@ -331,6 +334,12 @@ static int kfd_event_page_set(struct kfd_process *p, void *kernel_address,
 	if (p->signal_page)
 		return -EBUSY;
 
+	if (size < KFD_SIGNAL_EVENT_LIMIT * 8) {
+		pr_err("Event page size %llu is too small, need at least %lu bytes\n",
+				size, (unsigned long)(KFD_SIGNAL_EVENT_LIMIT * 8));
+		return -EINVAL;
+	}
+
 	page = kzalloc(sizeof(*page), GFP_KERNEL);
 	if (!page)
 		return -ENOMEM;
@@ -474,6 +483,11 @@ int kfd_criu_restore_event(struct file *devkfd,
 	}
 	*priv_data_offset += sizeof(*ev_priv);
 
+	if (ev_priv->event_id > INT_MAX) {
+		ret = -EINVAL;
+		goto exit;
+	}
+
 	if (ev_priv->user_handle) {
 		ret = kfd_kmap_event_page(p, ev_priv->user_handle);
 		if (ret)
@@ -507,6 +521,9 @@ int kfd_criu_restore_event(struct file *devkfd,
 
 		ret = create_other_event(p, ev, &ev_priv->event_id);
 		break;
+	default:
+		ret = -EINVAL;
+		break;
 	}
 	mutex_unlock(&p->event_mutex);
 
@@ -528,15 +545,27 @@ int kfd_criu_checkpoint_events(struct kfd_process *p,
 	int ret =  0;
 	struct kfd_event *ev;
 	uint32_t ev_id;
+	uint32_t num_events;
 
-	uint32_t num_events = kfd_get_num_events(p);
+	/* Serialize the count and the walk below against concurrent event
+	 * create/destroy. Those paths take only p->event_mutex, not the
+	 * p->mutex held by the CRIU checkpoint caller, so without this the
+	 * event_idr can grow between kfd_get_num_events() and the loop and the
+	 * walk writes past the ev_privs allocation.
+	 */
+	mutex_lock(&p->event_mutex);
 
-	if (!num_events)
+	num_events = kfd_get_num_events(p);
+	if (!num_events) {
+		mutex_unlock(&p->event_mutex);
 		return 0;
+	}
 
 	ev_privs = kvzalloc(num_events * sizeof(*ev_privs), GFP_KERNEL);
-	if (!ev_privs)
+	if (!ev_privs) {
+		mutex_unlock(&p->event_mutex);
 		return -ENOMEM;
+	}
 
 
 	idr_for_each_entry(&p->event_idr, ev, ev_id) {
@@ -576,6 +605,8 @@ int kfd_criu_checkpoint_events(struct kfd_process *p,
 			  ev_priv->signaled);
 		i++;
 	}
+
+	mutex_unlock(&p->event_mutex);
 
 	ret = copy_to_user(user_priv_data + *priv_data_offset,
 			   ev_privs, num_events * sizeof(*ev_privs));
@@ -727,7 +758,7 @@ void kfd_signal_event_interrupt(u32 pasid, uint32_t partial_id,
 	 * to process context, kfd_process could attempt to exit while we are
 	 * running so the lookup function increments the process ref count.
 	 */
-	struct kfd_process *p = kfd_lookup_process_by_pasid(pasid);
+	struct kfd_process *p = kfd_lookup_process_by_pasid(pasid, NULL);
 
 	if (!p)
 		return; /* Presumably process exited. */
@@ -1139,8 +1170,8 @@ static void lookup_events_by_type_and_signal(struct kfd_process *p,
 
 	if (type == KFD_EVENT_TYPE_MEMORY) {
 		dev_warn(kfd_device,
-			"Sending SIGSEGV to process %d (pasid 0x%x)",
-				p->lead_thread->pid, p->pasid);
+			"Sending SIGSEGV to process pid %d",
+				p->lead_thread->pid);
 		send_sig(SIGSEGV, p->lead_thread, 0);
 	}
 
@@ -1148,13 +1179,13 @@ static void lookup_events_by_type_and_signal(struct kfd_process *p,
 	if (send_signal) {
 		if (send_sigterm) {
 			dev_warn(kfd_device,
-				"Sending SIGTERM to process %d (pasid 0x%x)",
-					p->lead_thread->pid, p->pasid);
+				"Sending SIGTERM to process pid %d",
+					p->lead_thread->pid);
 			send_sig(SIGTERM, p->lead_thread, 0);
 		} else {
 			dev_err(kfd_device,
-				"Process %d (pasid 0x%x) got unhandled exception",
-				p->lead_thread->pid, p->pasid);
+				"Process pid %d got unhandled exception",
+				p->lead_thread->pid);
 		}
 	}
 
@@ -1168,7 +1199,7 @@ void kfd_signal_hw_exception_event(u32 pasid)
 	 * to process context, kfd_process could attempt to exit while we are
 	 * running so the lookup function increments the process ref count.
 	 */
-	struct kfd_process *p = kfd_lookup_process_by_pasid(pasid);
+	struct kfd_process *p = kfd_lookup_process_by_pasid(pasid, NULL);
 
 	if (!p)
 		return; /* Presumably process exited. */
@@ -1177,22 +1208,39 @@ void kfd_signal_hw_exception_event(u32 pasid)
 	kfd_unref_process(p);
 }
 
-void kfd_signal_vm_fault_event(struct kfd_node *dev, u32 pasid,
+void kfd_signal_vm_fault_event_with_userptr(struct kfd_process *p, uint64_t gpu_va)
+{
+	struct kfd_process_device *pdd;
+	struct kfd_hsa_memory_exception_data exception_data;
+	int i;
+
+	memset(&exception_data, 0, sizeof(exception_data));
+	exception_data.va = gpu_va;
+	exception_data.failure.NotPresent = 1;
+
+	// Send VM seg fault to all kfd process device
+	for (i = 0; i < p->n_pdds; i++) {
+		pdd = p->pdds[i];
+		exception_data.gpu_id = pdd->user_gpu_id;
+		kfd_evict_process_device(pdd);
+		kfd_signal_vm_fault_event(pdd, NULL, &exception_data);
+	}
+}
+
+void kfd_signal_vm_fault_event(struct kfd_process_device *pdd,
 				struct kfd_vm_fault_info *info,
 				struct kfd_hsa_memory_exception_data *data)
 {
 	struct kfd_event *ev;
 	uint32_t id;
-	struct kfd_process *p = kfd_lookup_process_by_pasid(pasid);
+	struct kfd_process *p = pdd->process;
 	struct kfd_hsa_memory_exception_data memory_exception_data;
 	int user_gpu_id;
 
-	if (!p)
-		return; /* Presumably process exited. */
-
-	user_gpu_id = kfd_process_get_user_gpu_id(p, dev->id);
+	user_gpu_id = kfd_process_get_user_gpu_id(p, pdd->dev->id);
 	if (unlikely(user_gpu_id == -EINVAL)) {
-		WARN_ONCE(1, "Could not get user_gpu_id from dev->id:%x\n", dev->id);
+		WARN_ONCE(1, "Could not get user_gpu_id from dev->id:%x\n",
+			  pdd->dev->id);
 		return;
 	}
 
@@ -1229,7 +1277,6 @@ void kfd_signal_vm_fault_event(struct kfd_node *dev, u32 pasid,
 		}
 
 	rcu_read_unlock();
-	kfd_unref_process(p);
 }
 
 void kfd_signal_reset_event(struct kfd_node *dev)
@@ -1240,6 +1287,8 @@ void kfd_signal_reset_event(struct kfd_node *dev)
 	struct kfd_event *ev;
 	unsigned int temp;
 	uint32_t id, idx;
+	int user_gpu_id;
+	struct kfd_process_device *pdd;
 	int reset_cause = atomic_read(&dev->sram_ecc_flag) ?
 			KFD_HW_EXCEPTION_ECC :
 			KFD_HW_EXCEPTION_GPU_HANG;
@@ -1255,16 +1304,14 @@ void kfd_signal_reset_event(struct kfd_node *dev)
 
 	idx = srcu_read_lock(&kfd_processes_srcu);
 	hash_for_each_rcu(kfd_processes_table, temp, p, kfd_processes) {
-		int user_gpu_id = kfd_process_get_user_gpu_id(p, dev->id);
-		struct kfd_process_device *pdd = kfd_get_process_device_data(dev, p);
+		pdd = kfd_get_process_device_data(dev, p);
+		if (!pdd)
+			/* no process is using this device */
+			continue;
+		user_gpu_id = kfd_process_get_user_gpu_id(p, dev->id);
 
 		if (unlikely(user_gpu_id == -EINVAL)) {
-			WARN_ONCE(1, "Could not get user_gpu_id from dev->id:%x\n", dev->id);
-			continue;
-		}
-
-		if (unlikely(!pdd)) {
-			WARN_ONCE(1, "Could not get device data from pasid:0x%x\n", p->pasid);
+			WARN_ONCE(1, "Could not get user_gpu_id from dev->id:%d\n", dev->id);
 			continue;
 		}
 
@@ -1273,12 +1320,19 @@ void kfd_signal_reset_event(struct kfd_node *dev)
 
 		if (dev->dqm->detect_hang_count) {
 			struct amdgpu_task_info *ti;
+			struct amdgpu_fpriv *drv_priv;
 
-			ti = amdgpu_vm_get_task_info_pasid(dev->adev, p->pasid);
+			if (unlikely(amdgpu_file_to_fpriv(pdd->drm_file, &drv_priv))) {
+				WARN_ONCE(1, "Could not get vm for device %x from pid:%d\n",
+					  dev->id, p->lead_thread->pid);
+				continue;
+			}
+
+			ti = amdgpu_vm_get_task_info_vm(&drv_priv->vm);
 			if (ti) {
 				dev_err(dev->adev->dev,
 					"Queues reset on process %s tid %d thread %s pid %d\n",
-					ti->process_name, ti->tgid, ti->task_name, ti->pid);
+					ti->process_name, ti->tgid, ti->task.comm, ti->task.pid);
 				amdgpu_vm_put_task_info(ti);
 			}
 		}
@@ -1311,7 +1365,7 @@ void kfd_signal_reset_event(struct kfd_node *dev)
 
 void kfd_signal_poison_consumed_event(struct kfd_node *dev, u32 pasid)
 {
-	struct kfd_process *p = kfd_lookup_process_by_pasid(pasid);
+	struct kfd_process *p = kfd_lookup_process_by_pasid(pasid, NULL);
 	struct kfd_hsa_memory_exception_data memory_exception_data;
 	struct kfd_hsa_hw_exception_data hw_exception_data;
 	struct kfd_event *ev;
@@ -1326,6 +1380,7 @@ void kfd_signal_poison_consumed_event(struct kfd_node *dev, u32 pasid)
 	user_gpu_id = kfd_process_get_user_gpu_id(p, dev->id);
 	if (unlikely(user_gpu_id == -EINVAL)) {
 		WARN_ONCE(1, "Could not get user_gpu_id from dev->id:%x\n", dev->id);
+		kfd_unref_process(p);
 		return;
 	}
 

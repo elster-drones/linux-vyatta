@@ -128,6 +128,7 @@ static const struct of_device_id apbmisc_match[] __initconst = {
 	{ .compatible = "nvidia,tegra186-misc", },
 	{ .compatible = "nvidia,tegra194-misc", },
 	{ .compatible = "nvidia,tegra234-misc", },
+	{ .compatible = "nvidia,tegra264-misc", },
 	{},
 };
 
@@ -277,7 +278,7 @@ void tegra_acpi_init_apbmisc(void)
 
 	ret = acpi_dev_get_memory_resources(adev, &resource_list);
 	if (ret < 0) {
-		pr_err("failed to get APBMISC memory resources");
+		pr_err("failed to get APBMISC memory resources\n");
 		goto out_put_acpi_dev;
 	}
 

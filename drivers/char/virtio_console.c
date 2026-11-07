@@ -26,6 +26,7 @@
 #include <linux/workqueue.h>
 #include <linux/module.h>
 #include <linux/dma-mapping.h>
+#include <linux/string_choices.h>
 #include "../tty/hvc/hvc_console.h"
 
 #define is_rproc_enabled IS_ENABLED(CONFIG_REMOTEPROC)
@@ -303,6 +304,12 @@ out:
 	return port;
 }
 
+/*
+ * Finds a port by the virtqueue and returns a pointer to struct port
+ * with the reference count incremented.
+ *
+ * Callers MUST decrement it when finished.
+ */
 static struct port *find_port_by_vq(struct ports_device *portdev,
 				    struct virtqueue *vq)
 {
@@ -311,8 +318,10 @@ static struct port *find_port_by_vq(struct ports_device *portdev,
 
 	spin_lock_irqsave(&portdev->ports_lock, flags);
 	list_for_each_entry(port, &portdev->ports, list)
-		if (port->in_vq == vq || port->out_vq == vq)
+		if (port->in_vq == vq || port->out_vq == vq) {
+			kref_get(&port->kref);
 			goto out;
+		}
 	port = NULL;
 out:
 	spin_unlock_irqrestore(&portdev->ports_lock, flags);
@@ -923,14 +932,14 @@ static ssize_t port_fops_splice_write(struct pipe_inode_info *pipe,
 
 	pipe_lock(pipe);
 	ret = 0;
-	if (pipe_empty(pipe->head, pipe->tail))
+	if (pipe_is_empty(pipe))
 		goto error_out;
 
 	ret = wait_port_writable(port, filp->f_flags & O_NONBLOCK);
 	if (ret < 0)
 		goto error_out;
 
-	occupancy = pipe_occupancy(pipe->head, pipe->tail);
+	occupancy = pipe_buf_usage(pipe);
 	buf = alloc_buf(port->portdev->vdev, 0, occupancy);
 
 	if (!buf) {
@@ -1269,8 +1278,7 @@ static int port_debugfs_show(struct seq_file *s, void *data)
 	seq_printf(s, "bytes_sent: %lu\n", port->stats.bytes_sent);
 	seq_printf(s, "bytes_received: %lu\n", port->stats.bytes_received);
 	seq_printf(s, "bytes_discarded: %lu\n", port->stats.bytes_discarded);
-	seq_printf(s, "is_console: %s\n",
-		   is_console_port(port) ? "yes" : "no");
+	seq_printf(s, "is_console: %s\n", str_yes_no(is_console_port(port)));
 	seq_printf(s, "console_vtermno: %u\n", port->cons.vtermno);
 
 	return 0;
@@ -1321,7 +1329,6 @@ static void send_sigio_to_port(struct port *port)
 
 static int add_port(struct ports_device *portdev, u32 id)
 {
-	char debugfs_name[16];
 	struct port *port;
 	dev_t devt;
 	int err;
@@ -1424,9 +1431,7 @@ static int add_port(struct ports_device *portdev, u32 id)
 	 * Finally, create the debugfs file that we can use to
 	 * inspect a port's state at any time
 	 */
-	snprintf(debugfs_name, sizeof(debugfs_name), "vport%up%u",
-		 port->portdev->vdev->index, id);
-	port->debugfs_file = debugfs_create_file(debugfs_name, 0444,
+	port->debugfs_file = debugfs_create_file(dev_name(port->dev), 0444,
 						 pdrvdata.debugfs_dir,
 						 port, &port_debugfs_fops);
 	return 0;
@@ -1579,8 +1584,8 @@ static void handle_control_message(struct virtio_device *vdev,
 		break;
 	case VIRTIO_CONSOLE_RESIZE: {
 		struct {
-			__u16 rows;
-			__u16 cols;
+			__virtio16 cols;
+			__virtio16 rows;
 		} size;
 
 		if (!is_console_port(port))
@@ -1588,7 +1593,8 @@ static void handle_control_message(struct virtio_device *vdev,
 
 		memcpy(&size, buf->buf + buf->offset + sizeof(*cpkt),
 		       sizeof(size));
-		set_console_size(port, size.rows, size.cols);
+		set_console_size(port, virtio16_to_cpu(vdev, size.rows),
+				 virtio16_to_cpu(vdev, size.cols));
 
 		port->cons.hvc->irq_requested = 1;
 		resize_console(port);
@@ -1708,6 +1714,7 @@ static void out_intr(struct virtqueue *vq)
 	}
 
 	wake_up_interruptible(&port->waitqueue);
+	kref_put(&port->kref, remove_port);
 }
 
 static void in_intr(struct virtqueue *vq)
@@ -1753,6 +1760,8 @@ static void in_intr(struct virtqueue *vq)
 
 	if (is_console_port(port) && hvc_poll(port->cons.hvc))
 		hvc_kick();
+
+	kref_put(&port->kref, remove_port);
 }
 
 static void control_intr(struct virtqueue *vq)
@@ -1773,32 +1782,40 @@ static void config_intr(struct virtio_device *vdev)
 		schedule_work(&portdev->config_work);
 }
 
+static void update_size_from_config(struct ports_device *portdev)
+{
+	struct virtio_device *vdev;
+	struct port *port;
+	u16 rows, cols;
+
+	vdev = portdev->vdev;
+
+	/*
+	 * We'll use this way of resizing only for legacy support.
+	 * For multiport devices, use control messages to indicate
+	 * console size changes so that it can be done per-port.
+	 *
+	 * Don't test F_SIZE at all if we're rproc: not a valid feature.
+	 */
+	if (is_rproc_serial(vdev) ||
+	    use_multiport(portdev) ||
+	    !virtio_has_feature(vdev, VIRTIO_CONSOLE_F_SIZE))
+		return;
+
+	virtio_cread(vdev, struct virtio_console_config, cols, &cols);
+	virtio_cread(vdev, struct virtio_console_config, rows, &rows);
+
+	port = find_port_by_id(portdev, 0);
+	set_console_size(port, rows, cols);
+	resize_console(port);
+}
+
 static void config_work_handler(struct work_struct *work)
 {
 	struct ports_device *portdev;
 
 	portdev = container_of(work, struct ports_device, config_work);
-	if (!use_multiport(portdev)) {
-		struct virtio_device *vdev;
-		struct port *port;
-		u16 rows, cols;
-
-		vdev = portdev->vdev;
-		virtio_cread(vdev, struct virtio_console_config, cols, &cols);
-		virtio_cread(vdev, struct virtio_console_config, rows, &rows);
-
-		port = find_port_by_id(portdev, 0);
-		set_console_size(port, rows, cols);
-
-		/*
-		 * We'll use this way of resizing only for legacy
-		 * support.  For newer userspace
-		 * (VIRTIO_CONSOLE_F_MULTPORT+), use control messages
-		 * to indicate console size changes so that it can be
-		 * done per-port.
-		 */
-		resize_console(port);
-	}
+	update_size_from_config(portdev);
 }
 
 static int init_vqs(struct ports_device *portdev)
@@ -1887,13 +1904,28 @@ static const struct file_operations portdev_fops = {
 static void remove_vqs(struct ports_device *portdev)
 {
 	struct virtqueue *vq;
+	bool multiport = use_multiport(portdev);
 
 	virtio_device_for_each_vq(portdev->vdev, vq) {
 		struct port_buffer *buf;
+		unsigned int len;
 
-		flush_bufs(vq, true);
-		while ((buf = virtqueue_detach_unused_buf(vq)))
-			free_buf(buf, true);
+		/*
+		 * c_ovq cookies are &portdev->cpkt, not port_buffer.
+		 * Detach them but do not free_buf().
+		 */
+		if (multiport && vq == portdev->c_ovq) {
+			spin_lock(&portdev->c_ovq_lock);
+			while (virtqueue_get_buf(vq, &len))
+				;
+			while (virtqueue_detach_unused_buf(vq))
+				;
+			spin_unlock(&portdev->c_ovq_lock);
+		} else {
+			flush_bufs(vq, true);
+			while ((buf = virtqueue_detach_unused_buf(vq)))
+				free_buf(buf, true);
+		}
 		cond_resched();
 	}
 	portdev->vdev->config->del_vqs(portdev->vdev);
@@ -2055,6 +2087,8 @@ static int virtcons_probe(struct virtio_device *vdev)
 
 	__send_control_msg(portdev, VIRTIO_CONSOLE_BAD_ID,
 			   VIRTIO_CONSOLE_DEVICE_READY, 1);
+
+	update_size_from_config(portdev);
 
 	return 0;
 

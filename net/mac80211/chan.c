@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
  * mac80211 - channel management
- * Copyright 2020 - 2024 Intel Corporation
+ * Copyright 2020 - 2025 Intel Corporation
  */
 
 #include <linux/nl80211.h>
@@ -45,6 +45,13 @@ int ieee80211_chanctx_refcount(struct ieee80211_local *local,
 {
 	return ieee80211_chanctx_num_assigned(local, ctx) +
 	       ieee80211_chanctx_num_reserved(local, ctx);
+}
+
+static bool
+ieee80211_chanctx_has_replace_partner(struct ieee80211_chanctx *ctx)
+{
+	return ctx->replace_state == IEEE80211_CHANCTX_WILL_BE_REPLACED &&
+	       ctx->replace_ctx;
 }
 
 static int ieee80211_num_chanctx(struct ieee80211_local *local, int radio_idx)
@@ -235,11 +242,12 @@ ieee80211_find_reservation_chanctx(struct ieee80211_local *local,
 	return NULL;
 }
 
-static enum nl80211_chan_width ieee80211_get_sta_bw(struct sta_info *sta,
-						    unsigned int link_id)
+static enum nl80211_chan_width
+ieee80211_get_sta_bw(struct sta_info *sta, struct ieee80211_link_data *link)
 {
 	enum ieee80211_sta_rx_bandwidth width;
 	struct link_sta_info *link_sta;
+	int link_id = link->link_id;
 
 	link_sta = wiphy_dereference(sta->local->hw.wiphy, sta->link[link_id]);
 
@@ -254,7 +262,7 @@ static enum nl80211_chan_width ieee80211_get_sta_bw(struct sta_info *sta,
 	 * capabilities here. Calling it RX bandwidth capability is a bit
 	 * wrong though, since capabilities are in fact symmetric.
 	 */
-	width = ieee80211_sta_cap_rx_bw(link_sta);
+	width = _ieee80211_sta_cap_rx_bw(link_sta, &link->conf->chanreq.oper);
 
 	switch (width) {
 	case IEEE80211_STA_RX_BW_20:
@@ -289,7 +297,6 @@ static enum nl80211_chan_width
 ieee80211_get_max_required_bw(struct ieee80211_link_data *link)
 {
 	struct ieee80211_sub_if_data *sdata = link->sdata;
-	unsigned int link_id = link->link_id;
 	enum nl80211_chan_width max_bw = NL80211_CHAN_WIDTH_20_NOHT;
 	struct sta_info *sta;
 
@@ -300,7 +307,7 @@ ieee80211_get_max_required_bw(struct ieee80211_link_data *link)
 		    !(sta->sdata->bss && sta->sdata->bss == sdata->bss))
 			continue;
 
-		max_bw = max(max_bw, ieee80211_get_sta_bw(sta, link_id));
+		max_bw = max(max_bw, ieee80211_get_sta_bw(sta, link));
 	}
 
 	return max_bw;
@@ -441,14 +448,16 @@ static void ieee80211_chan_bw_change(struct ieee80211_local *local,
 	rcu_read_lock();
 	list_for_each_entry_rcu(sta, &local->sta_list,
 				list) {
-		struct ieee80211_sub_if_data *sdata = sta->sdata;
+		struct ieee80211_sub_if_data *sdata;
 		enum ieee80211_sta_rx_bandwidth new_sta_bw;
 		unsigned int link_id;
 
 		if (!ieee80211_sdata_running(sta->sdata))
 			continue;
 
-		for (link_id = 0; link_id < ARRAY_SIZE(sta->sdata->link); link_id++) {
+		sdata = get_bss_sdata(sta->sdata);
+
+		for (link_id = 0; link_id < ARRAY_SIZE(sdata->link); link_id++) {
 			struct ieee80211_link_data *link =
 				rcu_dereference(sdata->link[link_id]);
 			struct ieee80211_bss_conf *link_conf;
@@ -644,15 +653,28 @@ ieee80211_find_chanctx(struct ieee80211_local *local,
 	return NULL;
 }
 
-bool ieee80211_is_radar_required(struct ieee80211_local *local)
+bool ieee80211_is_radar_required(struct ieee80211_local *local,
+				 struct cfg80211_scan_request *req)
 {
+	struct wiphy *wiphy = local->hw.wiphy;
 	struct ieee80211_link_data *link;
+	struct ieee80211_channel *chan;
+	int radio_idx;
 
 	lockdep_assert_wiphy(local->hw.wiphy);
 
+	if (!req)
+		return false;
+
 	for_each_sdata_link(local, link) {
-		if (link->radar_required)
-			return true;
+		if (link->radar_required) {
+			chan = link->conf->chanreq.oper.chan;
+			radio_idx = cfg80211_get_radio_idx_by_chan(wiphy, chan);
+
+			if (ieee80211_is_radio_idx_in_scan_req(wiphy, req,
+							       radio_idx))
+				return true;
+		}
 	}
 
 	return false;
@@ -720,7 +742,7 @@ static int ieee80211_add_chanctx(struct ieee80211_local *local,
 	/* turn idle off *before* setting channel -- some drivers need that */
 	changed = ieee80211_idle_off(local);
 	if (changed)
-		ieee80211_hw_config(local, changed);
+		ieee80211_hw_config(local, -1, changed);
 
 	err = drv_add_chanctx(local, ctx);
 	if (err) {
@@ -886,7 +908,7 @@ static int ieee80211_assign_link_chanctx(struct ieee80211_link_data *link,
 	conf = rcu_dereference_protected(link->conf->chanctx_conf,
 					 lockdep_is_held(&local->hw.wiphy->mtx));
 
-	if (conf) {
+	if (conf && !local->in_reconfig) {
 		curr_ctx = container_of(conf, struct ieee80211_chanctx, conf);
 
 		drv_unassign_vif_chanctx(local, sdata, link->conf, curr_ctx);
@@ -906,8 +928,9 @@ static int ieee80211_assign_link_chanctx(struct ieee80211_link_data *link,
 
 			/* succeeded, so commit it to the data structures */
 			conf = &new_ctx->conf;
-			list_add(&link->assigned_chanctx_list,
-				 &new_ctx->assigned_links);
+			if (!local->in_reconfig)
+				list_add(&link->assigned_chanctx_list,
+					 &new_ctx->assigned_links);
 		}
 	} else {
 		ret = 0;
@@ -1084,15 +1107,16 @@ void ieee80211_link_copy_chanctx_to_vlans(struct ieee80211_link_data *link,
 	__ieee80211_link_copy_chanctx_to_vlans(link, clear);
 }
 
-int ieee80211_link_unreserve_chanctx(struct ieee80211_link_data *link)
+void ieee80211_link_unreserve_chanctx(struct ieee80211_link_data *link)
 {
 	struct ieee80211_sub_if_data *sdata = link->sdata;
 	struct ieee80211_chanctx *ctx = link->reserved_chanctx;
+	struct ieee80211_chanctx *old_ctx = NULL;
 
 	lockdep_assert_wiphy(sdata->local->hw.wiphy);
 
 	if (WARN_ON(!ctx))
-		return -EINVAL;
+		return;
 
 	list_del(&link->reserved_chanctx_list);
 	link->reserved_chanctx = NULL;
@@ -1100,8 +1124,9 @@ int ieee80211_link_unreserve_chanctx(struct ieee80211_link_data *link)
 	if (ieee80211_chanctx_refcount(sdata->local, ctx) == 0) {
 		if (ctx->replace_state == IEEE80211_CHANCTX_REPLACES_OTHER) {
 			if (WARN_ON(!ctx->replace_ctx))
-				return -EINVAL;
+				return;
 
+			old_ctx = ctx->replace_ctx;
 			WARN_ON(ctx->replace_ctx->replace_state !=
 			        IEEE80211_CHANCTX_WILL_BE_REPLACED);
 			WARN_ON(ctx->replace_ctx->replace_ctx != ctx);
@@ -1112,12 +1137,15 @@ int ieee80211_link_unreserve_chanctx(struct ieee80211_link_data *link)
 
 			list_del_rcu(&ctx->list);
 			kfree_rcu(ctx, rcu_head);
+
+			if (ieee80211_chanctx_refcount(sdata->local,
+						       old_ctx) == 0)
+				ieee80211_free_chanctx(sdata->local, old_ctx,
+						       false);
 		} else {
 			ieee80211_free_chanctx(sdata->local, ctx, false);
 		}
 	}
-
-	return 0;
 }
 
 static struct ieee80211_chanctx *
@@ -1278,7 +1306,7 @@ ieee80211_link_chanctx_reservation_complete(struct ieee80211_link_data *link)
 				 &link->csa.finalize_work);
 		break;
 	case NL80211_IFTYPE_STATION:
-		wiphy_delayed_work_queue(sdata->local->hw.wiphy,
+		wiphy_hrtimer_work_queue(sdata->local->hw.wiphy,
 					 &link->u.mgd.csa.switch_work, 0);
 		break;
 	case NL80211_IFTYPE_UNSPECIFIED:
@@ -1381,6 +1409,7 @@ ieee80211_link_use_reserved_reassign(struct ieee80211_link_data *link)
 		goto out;
 	}
 
+	link->radar_required = link->reserved_radar_required;
 	list_move(&link->assigned_chanctx_list, &new_ctx->assigned_links);
 	rcu_assign_pointer(link_conf->chanctx_conf, &new_ctx->conf);
 
@@ -1389,7 +1418,8 @@ ieee80211_link_use_reserved_reassign(struct ieee80211_link_data *link)
 
 	ieee80211_check_fast_xmit_iface(sdata);
 
-	if (ieee80211_chanctx_refcount(local, old_ctx) == 0)
+	if (ieee80211_chanctx_refcount(local, old_ctx) == 0 &&
+	    !ieee80211_chanctx_has_replace_partner(old_ctx))
 		ieee80211_free_chanctx(local, old_ctx, false);
 
 	ieee80211_recalc_chanctx_min_def(local, new_ctx, NULL, false);
@@ -1455,7 +1485,8 @@ out:
 }
 
 static bool
-ieee80211_link_has_in_place_reservation(struct ieee80211_link_data *link)
+ieee80211_link_has_in_place_reservation(struct ieee80211_link_data *link,
+					struct ieee80211_chanctx *ctx)
 {
 	struct ieee80211_sub_if_data *sdata = link->sdata;
 	struct ieee80211_chanctx *old_ctx, *new_ctx;
@@ -1464,6 +1495,9 @@ ieee80211_link_has_in_place_reservation(struct ieee80211_link_data *link)
 
 	new_ctx = link->reserved_chanctx;
 	old_ctx = ieee80211_link_get_chanctx(link);
+
+	if (new_ctx != ctx)
+		return false;
 
 	if (!old_ctx)
 		return false;
@@ -1475,6 +1509,12 @@ ieee80211_link_has_in_place_reservation(struct ieee80211_link_data *link)
 		return false;
 
 	if (new_ctx->replace_state != IEEE80211_CHANCTX_REPLACES_OTHER)
+		return false;
+
+	if (new_ctx->replace_ctx != old_ctx)
+		return false;
+
+	if (old_ctx->replace_ctx != new_ctx)
 		return false;
 
 	return true;
@@ -1506,7 +1546,7 @@ static int ieee80211_chsw_switch_vifs(struct ieee80211_local *local,
 
 		list_for_each_entry(link, &ctx->reserved_links,
 				    reserved_chanctx_list) {
-			if (!ieee80211_link_has_in_place_reservation(link))
+			if (!ieee80211_link_has_in_place_reservation(link, ctx))
 				continue;
 
 			old_ctx = ieee80211_link_get_chanctx(link);
@@ -1609,7 +1649,7 @@ static int ieee80211_vif_use_reserved_switch(struct ieee80211_local *local)
 		list_for_each_entry(link, &ctx->replace_ctx->assigned_links,
 				    assigned_chanctx_list) {
 			n_assigned++;
-			if (link->reserved_chanctx) {
+			if (ieee80211_link_has_in_place_reservation(link, ctx)) {
 				n_reserved++;
 				if (link->reserved_ready)
 					n_ready++;
@@ -1630,7 +1670,7 @@ static int ieee80211_vif_use_reserved_switch(struct ieee80211_local *local)
 		ctx->conf.radar_enabled = false;
 		list_for_each_entry(link, &ctx->reserved_links,
 				    reserved_chanctx_list) {
-			if (ieee80211_link_has_in_place_reservation(link) &&
+			if (ieee80211_link_has_in_place_reservation(link, ctx) &&
 			    !link->reserved_ready)
 				return -EAGAIN;
 
@@ -1672,7 +1712,7 @@ static int ieee80211_vif_use_reserved_switch(struct ieee80211_local *local)
 
 		list_for_each_entry(link, &ctx->reserved_links,
 				    reserved_chanctx_list) {
-			if (!ieee80211_link_has_in_place_reservation(link))
+			if (!ieee80211_link_has_in_place_reservation(link, ctx))
 				continue;
 
 			ieee80211_chan_bw_change(local,
@@ -1721,7 +1761,7 @@ static int ieee80211_vif_use_reserved_switch(struct ieee80211_local *local)
 			struct ieee80211_bss_conf *link_conf = link->conf;
 			u64 changed = 0;
 
-			if (!ieee80211_link_has_in_place_reservation(link))
+			if (!ieee80211_link_has_in_place_reservation(link, ctx))
 				continue;
 
 			rcu_assign_pointer(link_conf->chanctx_conf,
@@ -1775,7 +1815,8 @@ static int ieee80211_vif_use_reserved_switch(struct ieee80211_local *local)
 		 */
 		list_for_each_entry_safe(link, link_tmp, &ctx->reserved_links,
 					 reserved_chanctx_list) {
-			if (WARN_ON(ieee80211_link_has_in_place_reservation(link)))
+			if (WARN_ON(ieee80211_link_has_in_place_reservation(link,
+									    ctx)))
 				continue;
 
 			if (WARN_ON(link->reserved_chanctx != ctx))
@@ -1864,7 +1905,8 @@ void __ieee80211_link_release_channel(struct ieee80211_link_data *link,
 	}
 
 	ieee80211_assign_link_chanctx(link, NULL, false);
-	if (ieee80211_chanctx_refcount(local, ctx) == 0)
+	if (ieee80211_chanctx_refcount(local, ctx) == 0 &&
+	    !ieee80211_chanctx_has_replace_partner(ctx))
 		ieee80211_free_chanctx(local, ctx, skip_idle_recalc);
 
 	link->radar_required = false;
@@ -1909,7 +1951,8 @@ int _ieee80211_link_use_channel(struct ieee80211_link_data *link,
 	if (ret < 0)
 		goto out;
 
-	__ieee80211_link_release_channel(link, false);
+	if (!local->in_reconfig)
+		__ieee80211_link_release_channel(link, false);
 
 	ctx = ieee80211_find_chanctx(local, link, chanreq, mode);
 	/* Note: context is now reserved */
@@ -2131,6 +2174,9 @@ void ieee80211_link_release_channel(struct ieee80211_link_data *link)
 {
 	struct ieee80211_sub_if_data *sdata = link->sdata;
 
+	if (sdata->vif.type == NL80211_IFTYPE_AP_VLAN)
+		return;
+
 	lockdep_assert_wiphy(sdata->local->hw.wiphy);
 
 	if (rcu_access_pointer(link->conf->chanctx_conf))
@@ -2178,3 +2224,21 @@ void ieee80211_iter_chan_contexts_atomic(
 	rcu_read_unlock();
 }
 EXPORT_SYMBOL_GPL(ieee80211_iter_chan_contexts_atomic);
+
+void ieee80211_iter_chan_contexts_mtx(
+	struct ieee80211_hw *hw,
+	void (*iter)(struct ieee80211_hw *hw,
+		     struct ieee80211_chanctx_conf *chanctx_conf,
+		     void *data),
+	void *iter_data)
+{
+	struct ieee80211_local *local = hw_to_local(hw);
+	struct ieee80211_chanctx *ctx;
+
+	lockdep_assert_wiphy(hw->wiphy);
+
+	list_for_each_entry(ctx, &local->chanctx_list, list)
+		if (ctx->driver_present)
+			iter(hw, &ctx->conf, iter_data);
+}
+EXPORT_SYMBOL_GPL(ieee80211_iter_chan_contexts_mtx);

@@ -17,9 +17,15 @@
 #include <asm/sigcontext.h>
 #include <asm/unistd.h>
 
+#include <linux/auxvec.h>
+
 #include "../../kselftest.h"
 
 #define TESTS_PER_HWCAP 3
+
+#ifndef AT_HWCAP3
+#define AT_HWCAP3 29
+#endif
 
 /*
  * Function expected to generate exception when the feature is not
@@ -50,7 +56,6 @@ static void cmpbr_sigill(void)
 {
 	/* Not implemented, too complicated and unreliable anyway */
 }
-
 
 static void crc32_sigill(void)
 {
@@ -163,6 +168,18 @@ static void lse128_sigill(void)
 		     : "+r" (memp), "+r" (val0), "+r" (val1)
 		     :
 		     : "cc", "memory");
+}
+
+static void lsfe_sigill(void)
+{
+	float __attribute__ ((aligned (16))) mem;
+	register float *memp asm ("x0") = &mem;
+
+	/* STFADD H0, [X0] */
+	asm volatile(".inst 0x7c20801f"
+		     : "+r" (memp)
+		     :
+		     : "memory");
 }
 
 static void lut_sigill(void)
@@ -456,8 +473,8 @@ static void sve2_sigill(void)
 
 static void sve2p1_sigill(void)
 {
-	/* BFADD Z0.H, Z0.H, Z0.H */
-	asm volatile(".inst 0x65000000" : : : "z0");
+	/* LD1Q {Z0.Q}, P0/Z, [Z0.D, X0] */
+	asm volatile(".inst 0xC400A000" : : : "z0");
 }
 
 static void sve2p2_sigill(void)
@@ -757,6 +774,13 @@ static const struct hwcap_data {
 		.hwcap_bit = HWCAP2_LSE128,
 		.cpuinfo = "lse128",
 		.sigill_fn = lse128_sigill,
+	},
+	{
+		.name = "LSFE",
+		.at_hwcap = AT_HWCAP3,
+		.hwcap_bit = HWCAP3_LSFE,
+		.cpuinfo = "lsfe",
+		.sigill_fn = lsfe_sigill,
 	},
 	{
 		.name = "LUT",
@@ -1097,6 +1121,18 @@ static const struct hwcap_data {
 		.cpuinfo = "hbc",
 		.sigill_fn = hbc_sigill,
 		.sigill_reliable = true,
+	},
+	{
+		.name = "MTE_FAR",
+		.at_hwcap = AT_HWCAP3,
+		.hwcap_bit = HWCAP3_MTE_FAR,
+		.cpuinfo = "mtefar",
+	},
+	{
+		.name = "MTE_STOREONLY",
+		.at_hwcap = AT_HWCAP3,
+		.hwcap_bit = HWCAP3_MTE_STORE_ONLY,
+		.cpuinfo = "mtestoreonly",
 	},
 };
 

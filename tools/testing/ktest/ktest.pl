@@ -21,6 +21,8 @@ my %opt;
 my %repeat_tests;
 my %repeats;
 my %evals;
+my @command_vars;
+my %command_tmp_vars;
 
 #default opts
 my %default = (
@@ -98,6 +100,7 @@ my $test_type;
 my $build_type;
 my $build_options;
 my $final_post_ktest;
+my $post_ktest_done = 0;
 my $pre_ktest;
 my $post_ktest;
 my $pre_test;
@@ -216,6 +219,7 @@ my $patchcheck_type;
 my $patchcheck_start;
 my $patchcheck_cherry;
 my $patchcheck_end;
+my $patchcheck_skip;
 
 my $build_time;
 my $install_time;
@@ -380,6 +384,7 @@ my %option_map = (
     "PATCHCHECK_START"		=> \$patchcheck_start,
     "PATCHCHECK_CHERRY"		=> \$patchcheck_cherry,
     "PATCHCHECK_END"		=> \$patchcheck_end,
+    "PATCHCHECK_SKIP"		=> \$patchcheck_skip,
 );
 
 # Options may be used by other options, record them.
@@ -900,13 +905,21 @@ sub set_eval {
 }
 
 sub set_variable {
-    my ($lvalue, $rvalue) = @_;
+    my ($lvalue, $rvalue, $command) = @_;
 
+    # Command line variables override all others
+    if (defined($command_tmp_vars{$lvalue})) {
+	return;
+    }
     if ($rvalue =~ /^\s*$/) {
 	delete $variable{$lvalue};
     } else {
 	$rvalue = process_variables($rvalue);
 	$variable{$lvalue} = $rvalue;
+    }
+
+    if (defined($command)) {
+	$command_tmp_vars{$lvalue} = 1;
     }
 }
 
@@ -1286,6 +1299,19 @@ sub read_config {
 
     $test_case = __read_config $config, \$test_num;
 
+    foreach my $val (@command_vars) {
+	chomp $val;
+	my %command_overrides;
+	if ($val =~ m/^\s*([A-Z_\[\]\d]+)\s*=\s*(.*?)\s*$/) {
+	    my $lvalue = $1;
+	    my $rvalue = $2;
+
+	    set_value($lvalue, $rvalue, 1, \%command_overrides, "COMMAND LINE");
+	} else {
+	    die "Invalid option definition '$val'\n";
+	}
+    }
+
     # make sure we have all mandatory configs
     get_mandatory_configs;
 
@@ -1371,7 +1397,10 @@ sub __eval_option {
 	# If a variable contains itself, use the default var
 	if (($var eq $name) && defined($opt{$var})) {
 	    $o = $opt{$var};
-	    $retval = "$retval$o";
+	    # Only append if the default doesn't contain itself
+	    if ($o !~ m/\$\{$var\}/) {
+		$retval = "$retval$o";
+	    }
 	} elsif (defined($opt{$o})) {
 	    $o = $opt{$o};
 	    $retval = "$retval$o";
@@ -1547,6 +1576,24 @@ sub get_test_name() {
     return $name;
 }
 
+sub run_post_ktest {
+    my $cmd;
+
+    return if ($post_ktest_done);
+
+    if (defined($final_post_ktest)) {
+	$cmd = $final_post_ktest;
+    } elsif (defined($post_ktest)) {
+	$cmd = $post_ktest;
+    } else {
+	return;
+    }
+
+    my $cp_post_ktest = eval_kernel_version($cmd);
+    run_command $cp_post_ktest;
+    $post_ktest_done = 1;
+}
+
 sub dodie {
     # avoid recursion
     return if ($in_die);
@@ -1606,6 +1653,7 @@ sub dodie {
     if (defined($post_test)) {
 	run_command $post_test;
     }
+    run_post_ktest;
 
     die @_, "\n";
 }
@@ -1787,7 +1835,7 @@ sub save_logs {
     my ($result, $basedir) = @_;
     my @t = localtime;
     my $date = sprintf "%04d%02d%02d%02d%02d%02d",
-	1900+$t[5],$t[4],$t[3],$t[2],$t[1],$t[0];
+	1900+$t[5],$t[4]+1,$t[3],$t[2],$t[1],$t[0];
 
     my $type = $build_type;
     if ($type =~ /useconfig/) {
@@ -2480,7 +2528,7 @@ sub check_buildlog {
     my $save_no_reboot = $no_reboot;
     $no_reboot = 1;
 
-    if (-f $warnings_file) {
+    if (defined($warnings_file) && -f $warnings_file) {
 	open(IN, $warnings_file) or
 	    dodie "Error opening $warnings_file";
 
@@ -3511,9 +3559,35 @@ sub patchcheck {
 	@list = reverse @list;
     }
 
+    my %skip_list;
+    my $will_skip = 0;
+
+    if (defined($patchcheck_skip)) {
+	foreach my $s (split /\s+/, $patchcheck_skip) {
+	    $s = `git log --pretty=oneline $s~1..$s`;
+	    $s =~ s/^(\S+).*/$1/;
+	    chomp $s;
+	    $skip_list{$s} = 1;
+	    $will_skip++;
+	}
+    }
+
     doprint("Going to test the following commits:\n");
     foreach my $l (@list) {
+	my $sha1 = $l;
+	$sha1 =~ s/^([[:xdigit:]]+).*/$1/;
+	next if (defined($skip_list{$sha1}));
 	doprint "$l\n";
+    }
+
+    if ($will_skip) {
+	doprint("\nSkipping the following commits:\n");
+	foreach my $l (@list) {
+	    my $sha1 = $l;
+	    $sha1 =~ s/^([[:xdigit:]]+).*/$1/;
+	    next if (!defined($skip_list{$sha1}));
+	    doprint "$l\n";
+	}
     }
 
     my $save_clean = $noclean;
@@ -3529,6 +3603,11 @@ sub patchcheck {
     foreach my $item (@list) {
 	my $sha1 = $item;
 	$sha1 =~ s/^([[:xdigit:]]+).*/$1/;
+
+	if (defined($skip_list{$sha1})) {
+	    doprint "\nSkipping \"$item\"\n\n";
+	    next;
+	}
 
 	doprint "\nProcessing commit \"$item\"\n\n";
 
@@ -4124,7 +4203,8 @@ sub __set_test_option {
 
     my $option = "$name\[$i\]";
 
-    if (option_defined($option)) {
+    if (exists($opt{$option})) {
+	return undef if (!option_defined($option));
 	return $opt{$option};
     }
 
@@ -4132,7 +4212,8 @@ sub __set_test_option {
 	if ($i >= $test &&
 	    $i < $test + $repeat_tests{$test}) {
 	    $option = "$name\[$test\]";
-	    if (option_defined($option)) {
+	    if (exists($opt{$option})) {
+		return undef if (!option_defined($option));
 		return $opt{$option};
 	    }
 	}
@@ -4239,11 +4320,59 @@ sub cancel_test {
 	send_email("KTEST: Your [$name] test was cancelled",
 	    "Your test started at $script_start_time was cancelled: sig int");
     }
+    run_post_ktest;
     die "\nCaught Sig Int, test interrupted: $!\n"
 }
 
-$#ARGV < 1 or die "ktest.pl version: $VERSION\n   usage: ktest.pl [config-file]\n";
+sub die_usage {
+    die << "EOF"
+ktest.pl version: $VERSION
+   usage: ktest.pl [options] [config-file]
+    [options]:
+       -D value: Where value can act as an option override.
+                -D BUILD_NOCLEAN=1
+                    Sets global BUILD_NOCLEAN to 1
+                -D TEST_TYPE[2]=build
+                    Sets TEST_TYPE of test 2 to "build"
 
+	        It can also override all temp variables.
+                 -D USE_TEMP_DIR:=1
+                    Will override all variables that use
+                    "USE_TEMP_DIR="
+
+EOF
+;
+}
+
+while ( $#ARGV >= 0 ) {
+    if ( $ARGV[0] eq "-D" ) {
+	shift;
+	die_usage if ($#ARGV < 1);
+	my $val = shift;
+
+	if ($val =~ m/(.*?):=(.*)$/) {
+	    set_variable($1, $2, 1);
+	} else {
+	    $command_vars[$#command_vars + 1] = $val;
+	}
+
+    } elsif ( $ARGV[0] =~ m/^-D(.*)/) {
+	my $val = $1;
+	shift;
+
+	if ($val =~ m/(.*?):=(.*)$/) {
+	    set_variable($1, $2, 1);
+	} else {
+	    $command_vars[$#command_vars + 1] = $val;
+	}
+    } elsif ( $ARGV[0] eq "-h" ) {
+	die_usage;
+    } else {
+	last;
+    }
+}
+
+$#ARGV < 1 or die_usage;
 if ($#ARGV == 0) {
     $ktest_config = $ARGV[0];
     if (! -f $ktest_config) {
@@ -4302,6 +4431,14 @@ if ($#new_configs >= 0) {
 if (defined($opt{"LOG_FILE"})) {
     if ($opt{"CLEAR_LOG"}) {
 	unlink $opt{"LOG_FILE"};
+    }
+
+    if (! -e $opt{"LOG_FILE"} && $opt{"LOG_FILE"} =~ m,^(.*/),) {
+        my $dir = $1;
+        if (! -d $dir) {
+            mkpath($dir) or die "Failed to create directories '$dir': $!";
+            print "\nThe log directory $dir did not exist, so it was created.\n";
+        }
     }
     open(LOG, ">> $opt{LOG_FILE}") or die "Can't write to $opt{LOG_FILE}";
     LOG->autoflush(1);
@@ -4458,6 +4595,10 @@ for (my $i = 1; $i <= $opt{"NUM_TESTS"}; $i++) {
 
     doprint "RUNNING TEST $i of $opt{NUM_TESTS}$name with option $test_type $run_type$installme\n\n";
 
+    # Always show which build directory and output directory is being used
+    doprint "BUILD_DIR=$builddir\n";
+    doprint "OUTPUT_DIR=$outputdir\n\n";
+
     if (defined($pre_test)) {
 	my $ret = run_command $pre_test;
 	if (!$ret && defined($pre_test_die) &&
@@ -4541,11 +4682,7 @@ for (my $i = 1; $i <= $opt{"NUM_TESTS"}; $i++) {
     success $i;
 }
 
-if (defined($final_post_ktest)) {
-
-    my $cp_final_post_ktest = eval_kernel_version $final_post_ktest;
-    run_command $cp_final_post_ktest;
-}
+run_post_ktest;
 
 if ($opt{"POWEROFF_ON_SUCCESS"}) {
     halt;

@@ -130,11 +130,8 @@ static void dcmipp_byteproc_adjust_compose(struct v4l2_rect *r,
 	r->left = 0;
 
 	/* Compose is not possible for JPEG or Bayer formats */
-	if (fmt->code == MEDIA_BUS_FMT_JPEG_1X8 ||
-	    fmt->code == MEDIA_BUS_FMT_SBGGR8_1X8 ||
-	    fmt->code == MEDIA_BUS_FMT_SGBRG8_1X8 ||
-	    fmt->code == MEDIA_BUS_FMT_SGRBG8_1X8 ||
-	    fmt->code == MEDIA_BUS_FMT_SRGGB8_1X8) {
+	if (fmt->code >= MEDIA_BUS_FMT_SBGGR8_1X8 &&
+	    fmt->code <= MEDIA_BUS_FMT_JPEG_1X8) {
 		r->width = fmt->width;
 		r->height = fmt->height;
 		return;
@@ -373,8 +370,8 @@ static int dcmipp_byteproc_set_selection(struct v4l2_subdev *sd,
 		mf->width = s->r.width;
 		mf->height = s->r.height;
 
-		dev_dbg(byteproc->dev, "s_selection: crop %ux%u@(%u,%u)\n",
-			crop->width, crop->height, crop->left, crop->top);
+		dev_dbg(byteproc->dev, "s_selection: crop (%d,%d)/%ux%u\n",
+			crop->left, crop->top, crop->width, crop->height);
 		break;
 	case V4L2_SEL_TGT_COMPOSE:
 		mf = v4l2_subdev_state_get_format(sd_state, 0);
@@ -386,9 +383,9 @@ static int dcmipp_byteproc_set_selection(struct v4l2_subdev *sd,
 		mf->width = s->r.width;
 		mf->height = s->r.height;
 
-		dev_dbg(byteproc->dev, "s_selection: compose %ux%u@(%u,%u)\n",
-			compose->width, compose->height,
-			compose->left, compose->top);
+		dev_dbg(byteproc->dev, "s_selection: compose (%d,%d)/%ux%u\n",
+			compose->left, compose->top,
+			compose->width, compose->height);
 		break;
 	default:
 		return -EINVAL;

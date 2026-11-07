@@ -47,6 +47,7 @@ int virtio_gpu_resource_id_get(struct virtio_gpu_device *vgdev, uint32_t *resid)
 		*resid = handle + 1;
 	} else {
 		int handle = ida_alloc(&vgdev->resource_ida, GFP_KERNEL);
+
 		if (handle < 0)
 			return handle;
 		*resid = handle + 1;
@@ -56,9 +57,8 @@ int virtio_gpu_resource_id_get(struct virtio_gpu_device *vgdev, uint32_t *resid)
 
 static void virtio_gpu_resource_id_put(struct virtio_gpu_device *vgdev, uint32_t id)
 {
-	if (!virtio_gpu_virglrenderer_workaround) {
+	if (!virtio_gpu_virglrenderer_workaround)
 		ida_free(&vgdev->resource_ida, id - 1);
-	}
 }
 
 void virtio_gpu_cleanup_object(struct virtio_gpu_object *bo)
@@ -161,7 +161,7 @@ static int virtio_gpu_object_shmem_init(struct virtio_gpu_device *vgdev,
 					struct virtio_gpu_mem_entry **ents,
 					unsigned int *nents)
 {
-	bool use_dma_api = !virtio_has_dma_quirk(vgdev->vdev);
+	bool use_dma_api = virtio_gpu_use_dma_api(vgdev->vdev);
 	struct scatterlist *sg;
 	struct sg_table *pages;
 	int si;

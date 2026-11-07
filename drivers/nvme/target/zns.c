@@ -120,7 +120,7 @@ void nvmet_execute_identify_ns_zns(struct nvmet_req *req)
 		mutex_unlock(&req->ns->subsys->lock);
 	}
 
-	if (!bdev_is_zoned(req->ns->bdev)) {
+	if (!req->ns->bdev || !bdev_is_zoned(req->ns->bdev)) {
 		status = NVME_SC_INVALID_FIELD | NVME_STATUS_DNR;
 		req->error_loc = offsetof(struct nvme_identify, nsid);
 		goto out;
@@ -541,7 +541,7 @@ void nvmet_bdev_execute_zone_append(struct nvmet_req *req)
 	struct bio *bio;
 	int sg_cnt;
 
-	/* Request is completed on len mismatch in nvmet_check_transter_len() */
+	/* Request is completed on len mismatch in nvmet_check_transfer_len() */
 	if (!nvmet_check_transfer_len(req, nvmet_rw_data_len(req)))
 		return;
 

@@ -148,6 +148,39 @@ static void *of_find_property_value_of_size(const struct device_node *np,
 }
 
 /**
+ * of_property_read_u16_index - Find and read a u16 from a multi-value property.
+ *
+ * @np:		device node from which the property value is to be read.
+ * @propname:	name of the property to be searched.
+ * @index:	index of the u16 in the list of values
+ * @out_value:	pointer to return value, modified only if no error.
+ *
+ * Search for a property in a device node and read nth 16-bit value from
+ * it.
+ *
+ * Return: 0 on success, -EINVAL if the property does not exist,
+ * -ENODATA if property does not have a value, and -EOVERFLOW if the
+ * property data isn't large enough.
+ *
+ * The out_value is modified only if a valid u16 value can be decoded.
+ */
+int of_property_read_u16_index(const struct device_node *np,
+				       const char *propname,
+				       u32 index, u16 *out_value)
+{
+	const u16 *val = of_find_property_value_of_size(np, propname,
+					((index + 1) * sizeof(*out_value)),
+					0, NULL);
+
+	if (IS_ERR(val))
+		return PTR_ERR(val);
+
+	*out_value = be16_to_cpup(((__be16 *)val) + index);
+	return 0;
+}
+EXPORT_SYMBOL_GPL(of_property_read_u16_index);
+
+/**
  * of_property_read_u32_index - Find and read a u32 from a multi-value property.
  *
  * @np:		device node from which the property value is to be read.
@@ -581,16 +614,31 @@ EXPORT_SYMBOL_GPL(of_prop_next_u32);
 
 const char *of_prop_next_string(const struct property *prop, const char *cur)
 {
-	const void *curv = cur;
+	const char *curv;
+	const char *end;
+	size_t len;
 
-	if (!prop)
+	if (!prop || !prop->value || !prop->length)
 		return NULL;
 
-	if (!cur)
-		return prop->value;
+	curv = cur ? cur : prop->value;
+	end = prop->value + prop->length;
 
-	curv += strlen(cur) + 1;
-	if (curv >= prop->value + prop->length)
+	if (curv < (const char *)prop->value || curv >= end)
+		return NULL;
+
+	if (cur) {
+		len = strnlen(curv, end - curv);
+		if (len >= end - curv)
+			return NULL;
+
+		curv += len + 1;
+		if (curv >= end)
+			return NULL;
+	}
+
+	len = strnlen(curv, end - curv);
+	if (len >= end - curv)
 		return NULL;
 
 	return curv;

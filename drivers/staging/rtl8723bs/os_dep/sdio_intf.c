@@ -216,8 +216,6 @@ void rtw_set_hal_ops(struct adapter *padapter)
 {
 	/* alloc memory for HAL DATA */
 	rtw_hal_data_init(padapter);
-
-	rtl8723bs_set_hal_ops(padapter);
 }
 
 static void sd_intf_start(struct adapter *padapter)
@@ -289,7 +287,7 @@ static struct adapter *rtw_sdio_if1_init(struct dvobj_priv *dvobj, const struct 
 
 	rtw_hal_chip_configure(padapter);
 
-	hal_btcoex_Initialize((void *) padapter);
+	hal_btcoex_Initialize((void *)padapter);
 
 	/* 3 6. read efuse/eeprom data */
 	rtw_hal_read_chip_info(padapter);
@@ -309,8 +307,8 @@ static struct adapter *rtw_sdio_if1_init(struct dvobj_priv *dvobj, const struct 
 	status = _SUCCESS;
 
 free_hal_data:
-	if (status != _SUCCESS && padapter->HalData)
-		kfree(padapter->HalData);
+	if (status != _SUCCESS)
+		rtw_hal_data_deinit(padapter);
 
 	if (status != _SUCCESS) {
 		rtw_wdev_unregister(padapter->rtw_wdev);
@@ -379,11 +377,15 @@ static int rtw_drv_init(
 	if (status != _SUCCESS)
 		goto free_if1;
 
-	if (sdio_alloc_irq(dvobj) != _SUCCESS)
-		goto free_if1;
+	status = sdio_alloc_irq(dvobj);
+	if (status != _SUCCESS)
+		goto free_netdev;
 
 	status = _SUCCESS;
 
+free_netdev:
+	if (status != _SUCCESS)
+		rtw_unregister_netdevs(dvobj);
 free_if1:
 	if (status != _SUCCESS && if1)
 		rtw_sdio_if1_deinit(if1);

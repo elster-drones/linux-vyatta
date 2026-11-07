@@ -151,8 +151,9 @@ int scsi_complete_async_scans(void)
 	struct async_scan_data *data;
 
 	do {
-		if (list_empty(&scanning_hosts))
-			return 0;
+		scoped_guard(spinlock, &async_scan_lock)
+			if (list_empty(&scanning_hosts))
+				return 0;
 		/* If we can't get memory immediately, that's OK.  Just
 		 * sleep a little.  Even if we never get memory, the async
 		 * scans will finish eventually.
@@ -354,11 +355,8 @@ static struct scsi_device *scsi_alloc_sdev(struct scsi_target *starget,
 	 * default device queue depth to figure out sbitmap shift
 	 * since we use this queue depth most of times.
 	 */
-	if (scsi_realloc_sdev_budget_map(sdev, depth)) {
-		put_device(&starget->dev);
-		kfree(sdev);
-		goto out;
-	}
+	if (scsi_realloc_sdev_budget_map(sdev, depth))
+		goto out_device_destroy;
 
 	scsi_change_queue_depth(sdev, depth);
 
@@ -908,7 +906,8 @@ static int scsi_add_lun(struct scsi_device *sdev, unsigned char *inq_result,
 	sdev->model = (char *) (sdev->inquiry + 16);
 	sdev->rev = (char *) (sdev->inquiry + 32);
 
-	if (strncmp(sdev->vendor, "ATA     ", 8) == 0) {
+	sdev->is_ata = strncmp(sdev->vendor, "ATA     ", 8) == 0;
+	if (sdev->is_ata) {
 		/*
 		 * sata emulation layer device.  This is a hack to work around
 		 * the SATL power management specifications which state that

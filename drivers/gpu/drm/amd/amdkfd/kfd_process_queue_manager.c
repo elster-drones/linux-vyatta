@@ -69,8 +69,8 @@ static int find_available_queue_slot(struct process_queue_manager *pqm,
 	pr_debug("The new slot id %lu\n", found);
 
 	if (found >= KFD_MAX_NUM_OF_QUEUES_PER_PROCESS) {
-		pr_info("Cannot open more queues for process with pasid 0x%x\n",
-				pqm->process->pasid);
+		pr_info("Cannot open more queues for process with pid %d\n",
+			pqm->process->lead_thread->pid);
 		return -ENOMEM;
 	}
 
@@ -279,20 +279,17 @@ static int init_user_queue(struct process_queue_manager *pqm,
 		/* Starting with GFX11, wptr BOs must be mapped to GART for MES to determine work
 		 * on unmapped queues for usermode queue oversubscription (no aggregated doorbell)
 		 */
-		if (((dev->adev->mes.sched_version & AMDGPU_MES_API_VERSION_MASK)
-		    >> AMDGPU_MES_API_VERSION_SHIFT) >= 2) {
-			if (dev->adev != amdgpu_ttm_adev(q_properties->wptr_bo->tbo.bdev)) {
-				pr_err("Queue memory allocated to wrong device\n");
-				retval = -EINVAL;
-				goto free_gang_ctx_bo;
-			}
+		if (dev->adev != amdgpu_ttm_adev(q_properties->wptr_bo->tbo.bdev)) {
+			pr_err("Queue memory allocated to wrong device\n");
+			retval = -EINVAL;
+			goto free_gang_ctx_bo;
+		}
 
-			retval = amdgpu_amdkfd_map_gtt_bo_to_gart(q_properties->wptr_bo,
-								  &(*q)->wptr_bo_gart);
-			if (retval) {
-				pr_err("Failed to map wptr bo to GART\n");
-				goto free_gang_ctx_bo;
-			}
+		retval = amdgpu_amdkfd_map_gtt_bo_to_gart(q_properties->wptr_bo,
+							  &(*q)->wptr_bo_gart);
+		if (retval) {
+			pr_err("Failed to map wptr bo to GART\n");
+			goto free_gang_ctx_bo;
 		}
 	}
 
@@ -363,9 +360,25 @@ int pqm_create_queue(struct process_queue_manager *pqm,
 	if (retval != 0)
 		return retval;
 
+	/* Register process if this is the first queue */
 	if (list_empty(&pdd->qpd.queues_list) &&
 	    list_empty(&pdd->qpd.priv_queue_list))
 		dev->dqm->ops.register_process(dev->dqm, &pdd->qpd);
+
+	/* Allocate proc_ctx_bo only if MES is enabled and this is the first queue */
+	if (!pdd->proc_ctx_cpu_ptr && dev->kfd->shared_resources.enable_mes) {
+		retval = amdgpu_amdkfd_alloc_gtt_mem(dev->adev,
+						     AMDGPU_MES_PROC_CTX_SIZE,
+						     &pdd->proc_ctx_bo,
+						     &pdd->proc_ctx_gpu_addr,
+						     &pdd->proc_ctx_cpu_ptr,
+						     false);
+		if (retval) {
+			dev_err(dev->adev->dev, "failed to allocate process context bo\n");
+			goto err_allocate_pqn;
+		}
+		memset(pdd->proc_ctx_cpu_ptr, 0, AMDGPU_MES_PROC_CTX_SIZE);
+	}
 
 	pqn = kzalloc(sizeof(*pqn), GFP_KERNEL);
 	if (!pqn) {
@@ -435,8 +448,15 @@ int pqm_create_queue(struct process_queue_manager *pqm,
 	}
 
 	if (retval != 0) {
-		pr_err("Pasid 0x%x DQM create queue type %d failed. ret %d\n",
-			pqm->process->pasid, type, retval);
+		if ((type == KFD_QUEUE_TYPE_SDMA ||
+		    type == KFD_QUEUE_TYPE_SDMA_XGMI ||
+		    type == KFD_QUEUE_TYPE_SDMA_BY_ENG_ID) &&
+		    retval == -ENOMEM)
+			pr_warn("process pid %d DQM create queue type %d failed. ret %d\n",
+				pqm->process->lead_thread->pid, type, retval);
+		else
+			pr_err("process pid %d DQM create queue type %d failed. ret %d\n",
+				pqm->process->lead_thread->pid, type, retval);
 		goto err_create_queue;
 	}
 
@@ -530,9 +550,9 @@ int pqm_destroy_queue(struct process_queue_manager *pqm, unsigned int qid)
 		retval = dqm->ops.destroy_queue(dqm, &pdd->qpd, pqn->q);
 		if (retval) {
 			pr_err("Pasid 0x%x destroy queue %d failed, ret %d\n",
-				pqm->process->pasid,
+				pdd->pasid,
 				pqn->q->properties.queue_id, retval);
-			if (retval != -ETIME)
+			if (retval != -ETIME && retval != -EIO)
 				goto err_destroy_queue;
 		}
 		kfd_procfs_del_queue(pqn->q);
@@ -586,6 +606,7 @@ int pqm_update_queue_properties(struct process_queue_manager *pqm,
 					 p->queue_size)) {
 			pr_debug("ring buf 0x%llx size 0x%llx not mapped on GPU\n",
 				 p->queue_address, p->queue_size);
+			amdgpu_bo_unreserve(vm->root.bo);
 			return -EFAULT;
 		}
 
@@ -650,19 +671,6 @@ int pqm_update_mqd(struct process_queue_manager *pqm,
 		pqn->q->properties.is_user_cu_masked = true;
 
 	return 0;
-}
-
-struct kernel_queue *pqm_get_kernel_queue(
-					struct process_queue_manager *pqm,
-					unsigned int qid)
-{
-	struct process_queue_node *pqn;
-
-	pqn = get_queue_by_qid(pqm, qid);
-	if (pqn && pqn->kq)
-		return pqn->kq;
-
-	return NULL;
 }
 
 struct queue *pqm_get_user_queue(struct process_queue_manager *pqm,
@@ -907,7 +915,10 @@ static int criu_checkpoint_queues_device(struct kfd_process_device *pdd,
 
 		q_data = (struct kfd_criu_queue_priv_data *)q_private_data;
 
-		/* data stored in this order: priv_data, mqd, ctl_stack */
+		/*
+		 * data stored in this order:
+		 * priv_data, mqd[xcc0], mqd[xcc1],..., ctl_stack[xcc0], ctl_stack[xcc1]...
+		 */
 		q_data->mqd_size = mqd_size;
 		q_data->ctl_stack_size = ctl_stack_size;
 
@@ -956,20 +967,24 @@ int kfd_criu_checkpoint_queues(struct kfd_process *p,
 }
 
 static void set_queue_properties_from_criu(struct queue_properties *qp,
-					  struct kfd_criu_queue_priv_data *q_data)
+					  struct kfd_criu_queue_priv_data *q_data, uint32_t num_xcc)
 {
 	qp->is_interop = false;
 	qp->queue_percent = q_data->q_percent;
 	qp->priority = q_data->priority;
 	qp->queue_address = q_data->q_address;
 	qp->queue_size = q_data->q_size;
-	qp->read_ptr = (uint32_t *) q_data->read_ptr_addr;
-	qp->write_ptr = (uint32_t *) q_data->write_ptr_addr;
+	qp->read_ptr = (void __user *)q_data->read_ptr_addr;
+	qp->write_ptr = (void __user *)q_data->write_ptr_addr;
 	qp->eop_ring_buffer_address = q_data->eop_ring_buffer_address;
 	qp->eop_ring_buffer_size = q_data->eop_ring_buffer_size;
 	qp->ctx_save_restore_area_address = q_data->ctx_save_restore_area_address;
 	qp->ctx_save_restore_area_size = q_data->ctx_save_restore_area_size;
-	qp->ctl_stack_size = q_data->ctl_stack_size;
+	if (q_data->type == KFD_QUEUE_TYPE_COMPUTE)
+		qp->ctl_stack_size = q_data->ctl_stack_size / num_xcc;
+	else
+		qp->ctl_stack_size = q_data->ctl_stack_size;
+
 	qp->type = q_data->type;
 	qp->format = q_data->format;
 }
@@ -1000,6 +1015,23 @@ int kfd_criu_restore_queue(struct kfd_process *p,
 		goto exit;
 	}
 
+	pdd = kfd_process_device_data_by_id(p, q_data->gpu_id);
+	if (!pdd) {
+		pr_err("Failed to get pdd\n");
+		ret = -EINVAL;
+		goto exit;
+	}
+
+	if (q_data->type >= KFD_QUEUE_TYPE_MAX) {
+		ret = -EINVAL;
+		goto exit;
+	}
+
+	if (q_data->mqd_size != mqd_size_from_queue_type(pdd->dev->dqm, q_data->type)) {
+		ret = -EINVAL;
+		goto exit;
+	}
+
 	*priv_data_offset += sizeof(*q_data);
 	q_extra_data_size = (uint64_t)q_data->ctl_stack_size + q_data->mqd_size;
 
@@ -1022,24 +1054,28 @@ int kfd_criu_restore_queue(struct kfd_process *p,
 
 	*priv_data_offset += q_extra_data_size;
 
-	pdd = kfd_process_device_data_by_id(p, q_data->gpu_id);
-	if (!pdd) {
-		pr_err("Failed to get pdd\n");
-		ret = -EINVAL;
-		goto exit;
-	}
-
-	/* data stored in this order: mqd, ctl_stack */
+	/*
+	 * data stored in this order:
+	 * mqd[xcc0], mqd[xcc1],..., ctl_stack[xcc0], ctl_stack[xcc1]...
+	 */
 	mqd = q_extra_data;
 	ctl_stack = mqd + q_data->mqd_size;
 
 	memset(&qp, 0, sizeof(qp));
-	set_queue_properties_from_criu(&qp, q_data);
+	set_queue_properties_from_criu(&qp, q_data, NUM_XCC(pdd->dev->xcc_mask));
+
+	ret = kfd_queue_acquire_buffers(pdd, &qp);
+	if (ret) {
+		pr_debug("failed to acquire user queue buffers for CRIU\n");
+		goto exit;
+	}
 
 	print_queue_properties(&qp);
 
 	ret = pqm_create_queue(&p->pqm, pdd->dev, &qp, &queue_id, q_data, mqd, ctl_stack, NULL);
 	if (ret) {
+		kfd_queue_unref_bo_vas(pdd, &qp);
+		kfd_queue_release_buffers(pdd, &qp);
 		pr_err("Failed to create new queue err:%d\n", ret);
 		goto exit;
 	}

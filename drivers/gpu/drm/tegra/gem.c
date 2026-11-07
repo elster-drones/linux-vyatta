@@ -17,7 +17,6 @@
 
 #include <drm/drm_drv.h>
 #include <drm/drm_prime.h>
-#include <drm/tegra_drm.h>
 
 #include "drm.h"
 #include "gem.h"
@@ -69,7 +68,7 @@ static struct host1x_bo_mapping *tegra_bo_pin(struct device *dev, struct host1x_
 		return ERR_PTR(-ENOMEM);
 
 	kref_init(&map->ref);
-	map->bo = host1x_bo_get(bo);
+	map->bo = bo;
 	map->direction = direction;
 	map->dev = dev;
 
@@ -170,7 +169,6 @@ static void tegra_bo_unpin(struct host1x_bo_mapping *map)
 		kfree(map->sgt);
 	}
 
-	host1x_bo_put(map->bo);
 	kfree(map);
 }
 
@@ -235,6 +233,7 @@ static const struct host1x_bo_ops tegra_bo_ops = {
 static int tegra_bo_iommu_map(struct tegra_drm *tegra, struct tegra_bo *bo)
 {
 	int prot = IOMMU_READ | IOMMU_WRITE;
+	ssize_t size;
 	int err;
 
 	if (bo->mm)
@@ -256,12 +255,14 @@ static int tegra_bo_iommu_map(struct tegra_drm *tegra, struct tegra_bo *bo)
 
 	bo->iova = bo->mm->start;
 
-	bo->size = iommu_map_sgtable(tegra->domain, bo->iova, bo->sgt, prot);
-	if (!bo->size) {
+	size = iommu_map_sgtable(tegra->domain, bo->iova, bo->sgt, prot);
+	if (size < 0) {
 		dev_err(tegra->drm->dev, "failed to map buffer\n");
-		err = -ENOMEM;
+		err = size;
 		goto remove;
 	}
+
+	bo->size = size;
 
 	mutex_unlock(&tegra->mm_lock);
 
@@ -509,22 +510,14 @@ free:
 void tegra_bo_free_object(struct drm_gem_object *gem)
 {
 	struct tegra_drm *tegra = gem->dev->dev_private;
-	struct host1x_bo_mapping *mapping, *tmp;
 	struct tegra_bo *bo = to_tegra_bo(gem);
 
-	/* remove all mappings of this buffer object from any caches */
-	list_for_each_entry_safe(mapping, tmp, &bo->base.mappings, list) {
-		if (mapping->cache)
-			host1x_bo_unpin(mapping);
-		else
-			dev_err(gem->dev->dev, "mapping %p stale for device %s\n", mapping,
-				dev_name(mapping->dev));
-	}
+	host1x_bo_clear_cached_mappings(&bo->base);
 
 	if (tegra->domain) {
 		tegra_bo_iommu_unmap(tegra, bo);
 
-		if (gem->import_attach) {
+		if (drm_gem_is_imported(gem)) {
 			dma_buf_unmap_attachment_unlocked(gem->import_attach, bo->sgt,
 							  DMA_TO_DEVICE);
 			dma_buf_detach(gem->import_attach->dmabuf, gem->import_attach);

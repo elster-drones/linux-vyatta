@@ -11,8 +11,11 @@
 #include <linux/pci.h>
 #include <linux/pm_runtime.h>
 
+#include <linux/gpio/consumer.h>
+
 #include "intel-thc-dev.h"
 #include "intel-thc-hw.h"
+#include "intel-thc-wot.h"
 
 #include "quickspi-dev.h"
 #include "quickspi-hid.h"
@@ -27,6 +30,14 @@ struct quickspi_driver_data lnl = {
 };
 
 struct quickspi_driver_data ptl = {
+	.max_packet_size_value = MAX_PACKET_SIZE_VALUE_LNL,
+};
+
+struct quickspi_driver_data arl = {
+	.max_packet_size_value = MAX_PACKET_SIZE_VALUE_MTL,
+};
+
+struct quickspi_driver_data nvl = {
 	.max_packet_size_value = MAX_PACKET_SIZE_VALUE_LNL,
 };
 
@@ -45,6 +56,15 @@ static guid_t thc_quickspi_guid =
 static guid_t thc_platform_guid =
 	GUID_INIT(0x84005682, 0x5b71, 0x41a4, 0x8d, 0x66, 0x81, 0x30,
 		  0xf7, 0x87, 0xa1, 0x38);
+
+
+/* QuickSPI Wake-on-Touch GPIO resource */
+static const struct acpi_gpio_params wake_gpio = { 0, 0, true };
+
+static const struct acpi_gpio_mapping quickspi_gpios[] = {
+	{ "wake-on-touch", &wake_gpio, 1 },
+	{ }
+};
 
 /**
  * thc_acpi_get_property - Query device ACPI parameter
@@ -426,7 +446,9 @@ static struct quickspi_device *quickspi_dev_init(struct pci_dev *pdev, void __io
 
 	thc_interrupt_enable(qsdev->thc_hw, true);
 
-	qsdev->state = QUICKSPI_INITED;
+	thc_wot_config(qsdev->thc_hw, &quickspi_gpios[0]);
+
+	qsdev->state = QUICKSPI_INITIATED;
 
 	return qsdev;
 }
@@ -442,6 +464,7 @@ static void quickspi_dev_deinit(struct quickspi_device *qsdev)
 {
 	thc_interrupt_enable(qsdev->thc_hw, false);
 	thc_ltr_unconfig(qsdev->thc_hw);
+	thc_wot_unconfig(qsdev->thc_hw);
 
 	qsdev->state = QUICKSPI_DISABLED;
 }
@@ -526,14 +549,22 @@ static int quickspi_alloc_report_buf(struct quickspi_device *qsdev)
 	max_input_len = max(le16_to_cpu(qsdev->dev_desc.rep_desc_len),
 			    le16_to_cpu(qsdev->dev_desc.max_input_len));
 
-	qsdev->input_buf = devm_kzalloc(qsdev->dev, max_input_len, GFP_KERNEL);
+	qsdev->input_buf = devm_kzalloc(qsdev->dev,
+					HIDSPI_INPUT_BODY_SIZE(max_input_len), GFP_KERNEL);
 	if (!qsdev->input_buf)
 		return -ENOMEM;
 
 	max_report_len = max(le16_to_cpu(qsdev->dev_desc.max_output_len),
 			     le16_to_cpu(qsdev->dev_desc.max_input_len));
 
-	qsdev->report_buf = devm_kzalloc(qsdev->dev, max_report_len, GFP_KERNEL);
+	/*
+	 * write_cmd_to_txdma() writes the output report header ahead of the
+	 * content in this buffer, so it has to hold both.
+	 */
+	qsdev->report_buf_size = HIDSPI_OUTPUT_REPORT_SIZE(max_report_len);
+
+	qsdev->report_buf = devm_kzalloc(qsdev->dev, qsdev->report_buf_size,
+					 GFP_KERNEL);
 	if (!qsdev->report_buf)
 		return -ENOMEM;
 
@@ -575,20 +606,19 @@ static int quickspi_probe(struct pci_dev *pdev,
 
 	pci_set_master(pdev);
 
-	ret = pcim_iomap_regions(pdev, BIT(0), KBUILD_MODNAME);
+	mem_addr = pcim_iomap_region(pdev, 0, KBUILD_MODNAME);
+	ret = PTR_ERR_OR_ZERO(mem_addr);
 	if (ret) {
 		dev_err(&pdev->dev, "Failed to get PCI regions, ret = %d.\n", ret);
 		goto disable_pci_device;
 	}
-
-	mem_addr = pcim_iomap_table(pdev)[0];
 
 	ret = dma_set_mask_and_coherent(&pdev->dev, DMA_BIT_MASK(64));
 	if (ret) {
 		ret = dma_set_mask_and_coherent(&pdev->dev, DMA_BIT_MASK(32));
 		if (ret) {
 			dev_err(&pdev->dev, "No usable DMA configuration %d\n", ret);
-			goto unmap_io_region;
+			goto disable_pci_device;
 		}
 	}
 
@@ -596,7 +626,7 @@ static int quickspi_probe(struct pci_dev *pdev,
 	if (ret < 0) {
 		dev_err(&pdev->dev,
 			"Failed to allocate IRQ vectors. ret = %d\n", ret);
-		goto unmap_io_region;
+		goto disable_pci_device;
 	}
 
 	pdev->irq = pci_irq_vector(pdev, 0);
@@ -605,7 +635,7 @@ static int quickspi_probe(struct pci_dev *pdev,
 	if (IS_ERR(qsdev)) {
 		dev_err(&pdev->dev, "QuickSPI device init failed\n");
 		ret = PTR_ERR(qsdev);
-		goto unmap_io_region;
+		goto disable_pci_device;
 	}
 
 	pci_set_drvdata(pdev, qsdev);
@@ -668,8 +698,6 @@ dma_deinit:
 	quickspi_dma_deinit(qsdev);
 dev_deinit:
 	quickspi_dev_deinit(qsdev);
-unmap_io_region:
-	pcim_iounmap_regions(pdev, BIT(0));
 disable_pci_device:
 	pci_clear_master(pdev);
 
@@ -695,11 +723,11 @@ static void quickspi_remove(struct pci_dev *pdev)
 	quickspi_hid_remove(qsdev);
 	quickspi_dma_deinit(qsdev);
 
+	pm_runtime_dont_use_autosuspend(qsdev->dev);
 	pm_runtime_get_noresume(qsdev->dev);
 
 	quickspi_dev_deinit(qsdev);
 
-	pcim_iounmap_regions(pdev, BIT(0));
 	pci_clear_master(pdev);
 }
 
@@ -909,6 +937,8 @@ static int quickspi_restore(struct device *device)
 
 	thc_change_ltr_mode(qsdev->thc_hw, THC_LTR_MODE_ACTIVE);
 
+	qsdev->state = QUICKSPI_ENABLED;
+
 	return 0;
 }
 
@@ -963,6 +993,12 @@ static const struct pci_device_id quickspi_pci_tbl[] = {
 	{PCI_DEVICE_DATA(INTEL, THC_PTL_H_DEVICE_ID_SPI_PORT2, &ptl), },
 	{PCI_DEVICE_DATA(INTEL, THC_PTL_U_DEVICE_ID_SPI_PORT1, &ptl), },
 	{PCI_DEVICE_DATA(INTEL, THC_PTL_U_DEVICE_ID_SPI_PORT2, &ptl), },
+	{PCI_DEVICE_DATA(INTEL, THC_WCL_DEVICE_ID_SPI_PORT1, &ptl), },
+	{PCI_DEVICE_DATA(INTEL, THC_WCL_DEVICE_ID_SPI_PORT2, &ptl), },
+	{PCI_DEVICE_DATA(INTEL, THC_ARL_DEVICE_ID_SPI_PORT1, &arl), },
+	{PCI_DEVICE_DATA(INTEL, THC_ARL_DEVICE_ID_SPI_PORT2, &arl), },
+	{PCI_DEVICE_DATA(INTEL, THC_NVL_H_DEVICE_ID_SPI_PORT1, &nvl), },
+	{PCI_DEVICE_DATA(INTEL, THC_NVL_H_DEVICE_ID_SPI_PORT2, &nvl), },
 	{}
 };
 MODULE_DEVICE_TABLE(pci, quickspi_pci_tbl);

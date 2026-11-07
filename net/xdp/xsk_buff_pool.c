@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0
 
+#include <linux/netdevice.h>
+#include <net/netdev_lock.h>
 #include <net/xsk_buff_pool.h>
 #include <net/xdp_sock.h>
 #include <net/xdp_sock_drv.h>
@@ -7,6 +9,8 @@
 #include "xsk_queue.h"
 #include "xdp_umem.h"
 #include "xsk.h"
+
+#define ETH_PAD_LEN (ETH_HLEN + 2 * VLAN_HLEN  + ETH_FCS_LEN)
 
 void xp_add_xsk(struct xsk_buff_pool *pool, struct xdp_sock *xs)
 {
@@ -42,18 +46,23 @@ void xp_destroy(struct xsk_buff_pool *pool)
 	kvfree(pool);
 }
 
-int xp_alloc_tx_descs(struct xsk_buff_pool *pool, struct xdp_sock *xs)
+int xp_alloc_tx_descs(struct xsk_buff_pool *pool, struct xdp_sock *xs,
+		      u32 max_segs)
 {
-	pool->tx_descs = kvcalloc(xs->tx->nentries, sizeof(*pool->tx_descs),
+	u32 nentries = max(xs->tx->nentries, max_segs);
+
+	pool->tx_descs = kvcalloc(nentries, sizeof(*pool->tx_descs),
 				  GFP_KERNEL);
 	if (!pool->tx_descs)
 		return -ENOMEM;
 
+	pool->tx_descs_nentries = nentries;
 	return 0;
 }
 
 struct xsk_buff_pool *xp_create_and_assign_umem(struct xdp_sock *xs,
-						struct xdp_umem *umem)
+						struct xdp_umem *umem,
+						u32 max_segs)
 {
 	bool unaligned = umem->flags & XDP_UMEM_UNALIGNED_CHUNK_FLAG;
 	struct xsk_buff_pool *pool;
@@ -70,7 +79,7 @@ struct xsk_buff_pool *xp_create_and_assign_umem(struct xdp_sock *xs,
 		goto out;
 
 	if (xs->tx)
-		if (xp_alloc_tx_descs(pool, xs))
+		if (xp_alloc_tx_descs(pool, xs, max_segs))
 			goto out;
 
 	pool->chunk_mask = ~((u64)umem->chunk_size - 1);
@@ -87,11 +96,13 @@ struct xsk_buff_pool *xp_create_and_assign_umem(struct xdp_sock *xs,
 	pool->addrs = umem->addrs;
 	pool->tx_metadata_len = umem->tx_metadata_len;
 	pool->tx_sw_csum = umem->flags & XDP_UMEM_TX_SW_CSUM;
+	spin_lock_init(&pool->rx_lock);
 	INIT_LIST_HEAD(&pool->free_list);
 	INIT_LIST_HEAD(&pool->xskb_list);
 	INIT_LIST_HEAD(&pool->xsk_tx_list);
 	spin_lock_init(&pool->xsk_tx_list_lock);
-	spin_lock_init(&pool->cq_lock);
+	spin_lock_init(&pool->cq_prod_lock);
+	spin_lock_init(&pool->cq_cached_prod_lock);
 	refcount_set(&pool->users, 1);
 
 	pool->fq = xs->fq_tmp;
@@ -105,7 +116,7 @@ struct xsk_buff_pool *xp_create_and_assign_umem(struct xdp_sock *xs,
 		if (pool->unaligned)
 			pool->free_heads[i] = xskb;
 		else
-			xp_init_xskb_addr(xskb, pool, i * pool->chunk_size);
+			xp_init_xskb_addr(xskb, pool, (u64)i * pool->chunk_size);
 	}
 
 	return pool;
@@ -162,8 +173,12 @@ static void xp_disable_drv_zc(struct xsk_buff_pool *pool)
 int xp_assign_dev(struct xsk_buff_pool *pool,
 		  struct net_device *netdev, u16 queue_id, u16 flags)
 {
+	u32 needed = netdev->mtu + ETH_PAD_LEN;
+	u32 segs = netdev->xdp_zc_max_segs;
+	bool mbuf = flags & XDP_USE_SG;
 	bool force_zc, force_copy;
 	struct netdev_bpf bpf;
+	u32 frame_size;
 	int err = 0;
 
 	ASSERT_RTNL();
@@ -183,7 +198,7 @@ int xp_assign_dev(struct xsk_buff_pool *pool,
 	if (err)
 		return err;
 
-	if (flags & XDP_USE_SG)
+	if (mbuf)
 		pool->umem->flags |= XDP_UMEM_SG_FLAG;
 
 	if (flags & XDP_USE_NEED_WAKEUP)
@@ -205,8 +220,24 @@ int xp_assign_dev(struct xsk_buff_pool *pool,
 		goto err_unreg_pool;
 	}
 
-	if (netdev->xdp_zc_max_segs == 1 && (flags & XDP_USE_SG)) {
-		err = -EOPNOTSUPP;
+	if (mbuf) {
+		if (segs == 1) {
+			err = -EOPNOTSUPP;
+			goto err_unreg_pool;
+		}
+	} else {
+		segs = 1;
+	}
+
+	/* open-code xsk_pool_get_rx_frame_size() as pool->dev is not
+	 * set yet at this point; we are before getting down to driver
+	 */
+	frame_size = __xsk_pool_get_rx_frame_size(pool) -
+		     xsk_pool_get_tailroom(mbuf);
+	frame_size = ALIGN_DOWN(frame_size, 128);
+
+	if (needed > frame_size * segs) {
+		err = -EINVAL;
 		goto err_unreg_pool;
 	}
 
@@ -219,6 +250,7 @@ int xp_assign_dev(struct xsk_buff_pool *pool,
 	bpf.xsk.pool = pool;
 	bpf.xsk.queue_id = queue_id;
 
+	netdev_ops_assert_locked(netdev);
 	err = netdev->netdev_ops->ndo_bpf(netdev, &bpf);
 	if (err)
 		goto err_unreg_pool;
@@ -255,6 +287,10 @@ int xp_assign_dev_shared(struct xsk_buff_pool *pool, struct xdp_sock *umem_xs,
 		return -EINVAL;
 
 	flags = umem->zc ? XDP_ZEROCOPY : XDP_COPY;
+
+	if (umem->flags & XDP_UMEM_SG_FLAG)
+		flags |= XDP_USE_SG;
+
 	if (umem_xs->pool->uses_need_wakeup)
 		flags |= XDP_USE_NEED_WAKEUP;
 
@@ -263,13 +299,17 @@ int xp_assign_dev_shared(struct xsk_buff_pool *pool, struct xdp_sock *umem_xs,
 
 void xp_clear_dev(struct xsk_buff_pool *pool)
 {
+	struct net_device *netdev = pool->netdev;
+
 	if (!pool->netdev)
 		return;
 
+	netdev_lock_ops(netdev);
 	xp_disable_drv_zc(pool);
 	xsk_clear_pool_at_qid(pool->netdev, pool->queue_id);
-	dev_put(pool->netdev);
 	pool->netdev = NULL;
+	netdev_unlock_ops(netdev);
+	dev_put(netdev);
 }
 
 static void xp_release_deferred(struct work_struct *work)
@@ -699,18 +739,59 @@ void xp_free(struct xdp_buff_xsk *xskb)
 }
 EXPORT_SYMBOL(xp_free);
 
+static u64 __xp_raw_get_addr(const struct xsk_buff_pool *pool, u64 addr)
+{
+	return pool->unaligned ? xp_unaligned_add_offset_to_addr(addr) : addr;
+}
+
+static void *__xp_raw_get_data(const struct xsk_buff_pool *pool, u64 addr)
+{
+	return pool->addrs + addr;
+}
+
 void *xp_raw_get_data(struct xsk_buff_pool *pool, u64 addr)
 {
-	addr = pool->unaligned ? xp_unaligned_add_offset_to_addr(addr) : addr;
-	return pool->addrs + addr;
+	return __xp_raw_get_data(pool, __xp_raw_get_addr(pool, addr));
 }
 EXPORT_SYMBOL(xp_raw_get_data);
 
-dma_addr_t xp_raw_get_dma(struct xsk_buff_pool *pool, u64 addr)
+static dma_addr_t __xp_raw_get_dma(const struct xsk_buff_pool *pool, u64 addr)
 {
-	addr = pool->unaligned ? xp_unaligned_add_offset_to_addr(addr) : addr;
 	return (pool->dma_pages[addr >> PAGE_SHIFT] &
 		~XSK_NEXT_PG_CONTIG_MASK) +
 		(addr & ~PAGE_MASK);
 }
+
+dma_addr_t xp_raw_get_dma(struct xsk_buff_pool *pool, u64 addr)
+{
+	return __xp_raw_get_dma(pool, __xp_raw_get_addr(pool, addr));
+}
 EXPORT_SYMBOL(xp_raw_get_dma);
+
+/**
+ * xp_raw_get_ctx - get &xdp_desc context
+ * @pool: XSk buff pool desc address belongs to
+ * @addr: desc address (from userspace)
+ * @options: desc options (from userspace)
+ *
+ * Helper for getting desc's DMA address and metadata pointer, if present.
+ * Saves one call on hotpath and double calculation of the actual address.
+ * Metadata is validated later by xsk_tx_metadata_request().
+ *
+ * Return: new &xdp_desc_ctx struct containing desc's DMA address and metadata
+ * pointer, if it is present (initialized to %NULL otherwise).
+ */
+struct xdp_desc_ctx xp_raw_get_ctx(const struct xsk_buff_pool *pool, u64 addr,
+				   u32 options)
+{
+	struct xdp_desc_ctx ret;
+
+	addr = __xp_raw_get_addr(pool, addr);
+
+	ret.dma = __xp_raw_get_dma(pool, addr);
+	ret.meta = __xsk_buff_get_metadata(pool, __xp_raw_get_data(pool, addr),
+					   options);
+
+	return ret;
+}
+EXPORT_SYMBOL(xp_raw_get_ctx);

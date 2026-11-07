@@ -306,7 +306,7 @@ static void qcom_get_related_cpus(int index, struct cpumask *m)
 	struct of_phandle_args args;
 	int cpu, ret;
 
-	for_each_possible_cpu(cpu) {
+	for_each_present_cpu(cpu) {
 		cpu_np = of_cpu_device_node_get(cpu);
 		if (!cpu_np)
 			continue;
@@ -566,12 +566,6 @@ static int qcom_cpufreq_hw_cpu_init(struct cpufreq_policy *policy)
 		return -ENODEV;
 	}
 
-	if (policy_has_boost_freq(policy)) {
-		ret = cpufreq_enable_boost_support();
-		if (ret)
-			dev_warn(cpu_dev, "failed to enable boost: %d\n", ret);
-	}
-
 	return qcom_cpufreq_hw_lmh_init(policy, index);
 }
 
@@ -584,7 +578,6 @@ static void qcom_cpufreq_hw_cpu_exit(struct cpufreq_policy *policy)
 	dev_pm_opp_of_cpumask_remove_table(policy->related_cpus);
 	qcom_cpufreq_hw_lmh_exit(data);
 	kfree(policy->freq_table);
-	kfree(data);
 }
 
 static void qcom_cpufreq_ready(struct cpufreq_policy *policy)
@@ -594,12 +587,6 @@ static void qcom_cpufreq_ready(struct cpufreq_policy *policy)
 	if (data->throttle_irq >= 0)
 		enable_irq(data->throttle_irq);
 }
-
-static struct freq_attr *qcom_cpufreq_hw_attr[] = {
-	&cpufreq_freq_attr_scaling_available_freqs,
-	&cpufreq_freq_attr_scaling_boost_freqs,
-	NULL
-};
 
 static struct cpufreq_driver cpufreq_qcom_hw_driver = {
 	.flags		= CPUFREQ_NEED_INITIAL_FREQ_CHECK |
@@ -615,8 +602,8 @@ static struct cpufreq_driver cpufreq_qcom_hw_driver = {
 	.register_em	= cpufreq_register_em_with_opp,
 	.fast_switch    = qcom_cpufreq_hw_fast_switch,
 	.name		= "qcom-cpufreq-hw",
-	.attr		= qcom_cpufreq_hw_attr,
 	.ready		= qcom_cpufreq_ready,
+	.set_boost	= cpufreq_boost_set_sw,
 };
 
 static unsigned long qcom_cpufreq_hw_recalc_rate(struct clk_hw *hw, unsigned long parent_rate)

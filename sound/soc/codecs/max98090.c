@@ -1234,9 +1234,13 @@ static const struct snd_soc_dapm_widget max98091_dapm_widgets[] = {
 	SND_SOC_DAPM_INPUT("DMIC4"),
 
 	SND_SOC_DAPM_SUPPLY("DMIC3_ENA", M98090_REG_DIGITAL_MIC_ENABLE,
-		 M98090_DIGMIC3_SHIFT, 0, NULL, 0),
+		 M98090_DIGMIC3_SHIFT, 0, max98090_shdn_event,
+			SND_SOC_DAPM_POST_PMU),
 	SND_SOC_DAPM_SUPPLY("DMIC4_ENA", M98090_REG_DIGITAL_MIC_ENABLE,
-		 M98090_DIGMIC4_SHIFT, 0, NULL, 0),
+		 M98090_DIGMIC4_SHIFT, 0, max98090_shdn_event,
+			 SND_SOC_DAPM_POST_PMU),
+	SND_SOC_DAPM_SUPPLY("DMIC34_HPF", M98090_REG_FILTER_CONFIG,
+		M98090_FLT_DMIC34HPF_SHIFT, 0, NULL, 0),
 };
 
 static const struct snd_soc_dapm_route max98090_dapm_routes[] = {
@@ -1425,8 +1429,8 @@ static const struct snd_soc_dapm_route max98091_dapm_routes[] = {
 	/* DMIC inputs */
 	{"DMIC3", NULL, "DMIC3_ENA"},
 	{"DMIC4", NULL, "DMIC4_ENA"},
-	{"DMIC3", NULL, "AHPF"},
-	{"DMIC4", NULL, "AHPF"},
+	{"DMIC3", NULL, "DMIC34_HPF"},
+	{"DMIC4", NULL, "DMIC34_HPF"},
 };
 
 static int max98090_add_widgets(struct snd_soc_component *component)
@@ -2386,8 +2390,9 @@ static int max98090_probe(struct snd_soc_component *component)
 	dev_dbg(component->dev, "max98090_probe\n");
 
 	max98090->mclk = devm_clk_get(component->dev, "mclk");
-	if (PTR_ERR(max98090->mclk) == -EPROBE_DEFER)
-		return -EPROBE_DEFER;
+	if (IS_ERR(max98090->mclk))
+		if (PTR_ERR(max98090->mclk) == -EPROBE_DEFER)
+			return -EPROBE_DEFER;
 
 	max98090->component = component;
 
@@ -2604,7 +2609,6 @@ static void max98090_i2c_remove(struct i2c_client *client)
 	max98090_i2c_shutdown(client);
 }
 
-#ifdef CONFIG_PM
 static int max98090_runtime_resume(struct device *dev)
 {
 	struct max98090_priv *max98090 = dev_get_drvdata(dev);
@@ -2626,9 +2630,7 @@ static int max98090_runtime_suspend(struct device *dev)
 
 	return 0;
 }
-#endif
 
-#ifdef CONFIG_PM_SLEEP
 static int max98090_resume(struct device *dev)
 {
 	struct max98090_priv *max98090 = dev_get_drvdata(dev);
@@ -2645,12 +2647,10 @@ static int max98090_resume(struct device *dev)
 
 	return 0;
 }
-#endif
 
 static const struct dev_pm_ops max98090_pm = {
-	SET_RUNTIME_PM_OPS(max98090_runtime_suspend,
-		max98090_runtime_resume, NULL)
-	SET_SYSTEM_SLEEP_PM_OPS(NULL, max98090_resume)
+	RUNTIME_PM_OPS(max98090_runtime_suspend, max98090_runtime_resume, NULL)
+	SYSTEM_SLEEP_PM_OPS(NULL, max98090_resume)
 };
 
 #ifdef CONFIG_OF
@@ -2673,7 +2673,7 @@ MODULE_DEVICE_TABLE(acpi, max98090_acpi_match);
 static struct i2c_driver max98090_i2c_driver = {
 	.driver = {
 		.name = "max98090",
-		.pm = &max98090_pm,
+		.pm = pm_ptr(&max98090_pm),
 		.of_match_table = of_match_ptr(max98090_of_match),
 		.acpi_match_table = ACPI_PTR(max98090_acpi_match),
 	},

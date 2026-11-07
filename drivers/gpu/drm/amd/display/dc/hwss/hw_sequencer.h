@@ -46,6 +46,8 @@ struct dce_hwseq;
 struct link_resource;
 struct dc_dmub_cmd;
 struct pg_block_update;
+struct drr_params;
+struct dc_underflow_debug_data;
 
 struct subvp_pipe_control_lock_fast_params {
 	struct dc *dc;
@@ -146,7 +148,7 @@ struct wait_for_dcc_meta_propagation_params {
 	const struct pipe_ctx *top_pipe_to_program;
 };
 
-struct fams2_global_control_lock_fast_params {
+struct dmub_hw_control_lock_fast_params {
 	struct dc *dc;
 	bool is_required;
 	bool lock;
@@ -171,7 +173,7 @@ union block_sequence_params {
 	struct set_ocsc_default_params set_ocsc_default_params;
 	struct subvp_save_surf_addr subvp_save_surf_addr;
 	struct wait_for_dcc_meta_propagation_params wait_for_dcc_meta_propagation_params;
-	struct fams2_global_control_lock_fast_params fams2_global_control_lock_fast_params;
+	struct dmub_hw_control_lock_fast_params dmub_hw_control_lock_fast_params;
 };
 
 enum block_sequence_func {
@@ -193,13 +195,17 @@ enum block_sequence_func {
 	MPC_SET_OCSC_DEFAULT,
 	DMUB_SUBVP_SAVE_SURF_ADDR,
 	HUBP_WAIT_FOR_DCC_META_PROP,
-	DMUB_FAMS2_GLOBAL_CONTROL_LOCK_FAST,
+	DMUB_HW_CONTROL_LOCK_FAST,
+	/* This must be the last value in this enum, add new ones above */
+	HWSS_BLOCK_SEQUENCE_FUNC_COUNT
 };
 
 struct block_sequence {
 	union block_sequence_params params;
 	enum block_sequence_func func;
 };
+
+#define MAX_HWSS_BLOCK_SEQUENCE_SIZE (HWSS_BLOCK_SEQUENCE_FUNC_COUNT * MAX_PIPES)
 
 struct hw_sequencer_funcs {
 	void (*hardware_release)(struct dc *dc);
@@ -240,6 +246,7 @@ struct hw_sequencer_funcs {
 		struct pipe_ctx *pipe_ctx, bool enableTripleBuffer);
 	void (*update_pending_status)(struct pipe_ctx *pipe_ctx);
 	void (*update_dsc_pg)(struct dc *dc, struct dc_state *context, bool safe_to_disable);
+	void (*clear_surface_dcc_and_tiling)(struct pipe_ctx *pipe_ctx, struct dc_plane_state *plane_state, bool clear_tiling);
 
 	/* Pipe Lock Related */
 	void (*pipe_control_lock)(struct dc *dc,
@@ -445,13 +452,13 @@ struct hw_sequencer_funcs {
 			const struct dc_state *new_ctx);
 	void (*wait_for_dcc_meta_propagation)(const struct dc *dc,
 		const struct pipe_ctx *top_pipe_to_program);
-	void (*fams2_global_control_lock)(struct dc *dc,
+	void (*dmub_hw_control_lock)(struct dc *dc,
 			struct dc_state *context,
 			bool lock);
 	void (*fams2_update_config)(struct dc *dc,
 			struct dc_state *context,
 			bool enable);
-	void (*fams2_global_control_lock_fast)(union block_sequence_params *params);
+	void (*dmub_hw_control_lock_fast)(union block_sequence_params *params);
 	void (*set_long_vtotal)(struct pipe_ctx **pipe_ctx, int num_pipes, uint32_t v_total_min, uint32_t v_total_max);
 	void (*program_outstanding_updates)(struct dc *dc,
 			struct dc_state *context);
@@ -469,6 +476,9 @@ struct hw_sequencer_funcs {
 			struct dc_state *context);
 	void (*post_unlock_reset_opp)(struct dc *dc,
 			struct pipe_ctx *opp_head);
+	void (*get_underflow_debug_data)(const struct dc *dc,
+			struct timing_generator *tg,
+			struct dc_underflow_debug_data *out_data);
 };
 
 void color_space_to_black_color(
@@ -496,6 +506,9 @@ void get_hdr_visual_confirm_color(
 void get_mpctree_visual_confirm_color(
 		struct pipe_ctx *pipe_ctx,
 		struct tg_color *color);
+void get_smartmux_visual_confirm_color(
+	struct dc *dc,
+	struct tg_color *color);
 void get_vabc_visual_confirm_color(
 	struct pipe_ctx *pipe_ctx,
 	struct tg_color *color);
@@ -516,19 +529,29 @@ void get_cursor_visual_confirm_color(
 		struct pipe_ctx *pipe_ctx,
 		struct tg_color *color);
 
+void get_dcc_visual_confirm_color(
+	struct dc *dc,
+	struct pipe_ctx *pipe_ctx,
+	struct tg_color *color);
+
 void set_p_state_switch_method(
 		struct dc *dc,
 		struct dc_state *context,
 		struct pipe_ctx *pipe_ctx);
 
+void set_drr_and_clear_adjust_pending(
+		struct pipe_ctx *pipe_ctx,
+		struct dc_stream_state *stream,
+		struct drr_params *params);
+
 void hwss_execute_sequence(struct dc *dc,
-		struct block_sequence block_sequence[],
+		struct block_sequence block_sequence[MAX_HWSS_BLOCK_SEQUENCE_SIZE],
 		int num_steps);
 
 void hwss_build_fast_sequence(struct dc *dc,
 		struct dc_dmub_cmd *dc_dmub_cmd,
 		unsigned int dmub_cmd_count,
-		struct block_sequence block_sequence[],
+		struct block_sequence block_sequence[MAX_HWSS_BLOCK_SEQUENCE_SIZE],
 		unsigned int *num_steps,
 		struct pipe_ctx *pipe_ctx,
 		struct dc_stream_status *stream_status,

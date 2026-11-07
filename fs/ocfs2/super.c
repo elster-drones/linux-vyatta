@@ -387,6 +387,7 @@ static ssize_t ocfs2_debug_read(struct file *file, char __user *buf,
 #endif	/* CONFIG_DEBUG_FS */
 
 static const struct file_operations ocfs2_osb_debug_fops = {
+	.owner =	THIS_MODULE,
 	.open =		ocfs2_osb_debug_open,
 	.release =	ocfs2_debug_release,
 	.read =		ocfs2_debug_read,
@@ -1812,6 +1813,9 @@ static void ocfs2_dismount_volume(struct super_block *sb, int mnt_err)
 	/* Orphan scan should be stopped as early as possible */
 	ocfs2_orphan_scan_stop(osb);
 
+	/* Stop quota recovery so that we can disable quotas */
+	ocfs2_recovery_disable_quota(osb);
+
 	ocfs2_disable_quotas(osb);
 
 	/* All dquots should be freed by now */
@@ -1959,7 +1963,7 @@ static int ocfs2_initialize_super(struct super_block *sb,
 
 	sb->s_fs_info = osb;
 	sb->s_op = &ocfs2_sops;
-	sb->s_d_op = &ocfs2_dentry_ops;
+	set_default_d_op(sb, &ocfs2_dentry_ops);
 	sb->s_export_op = &ocfs2_export_ops;
 	sb->s_qcop = &dquot_quotactl_sysfile_ops;
 	sb->dq_op = &ocfs2_quota_operations;
@@ -1993,8 +1997,6 @@ static int ocfs2_initialize_super(struct super_block *sb,
 	spin_lock_init(&osb->osb_lock);
 	spin_lock_init(&osb->osb_xattr_lock);
 	ocfs2_init_steal_slots(osb);
-
-	mutex_init(&osb->system_file_mutex);
 
 	atomic_set(&osb->alloc_stats.moves, 0);
 	atomic_set(&osb->alloc_stats.local_data, 0);

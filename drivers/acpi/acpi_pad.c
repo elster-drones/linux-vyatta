@@ -19,7 +19,7 @@
 #include <linux/acpi.h>
 #include <linux/perf_event.h>
 #include <linux/platform_device.h>
-#include <asm/cpuid.h>
+#include <asm/cpuid/api.h>
 #include <asm/mwait.h>
 #include <xen/xen.h>
 
@@ -33,7 +33,7 @@
 static DEFINE_MUTEX(isolated_cpus_lock);
 static DEFINE_MUTEX(round_robin_lock);
 
-static unsigned long power_saving_mwait_eax;
+static unsigned int power_saving_mwait_eax;
 
 static unsigned char tsc_detected_unstable;
 static unsigned char tsc_marked_unstable;
@@ -426,8 +426,12 @@ static void acpi_pad_notify(acpi_handle handle, u32 event,
 
 static int acpi_pad_probe(struct platform_device *pdev)
 {
-	struct acpi_device *adev = ACPI_COMPANION(&pdev->dev);
+	struct acpi_device *adev;
 	acpi_status status;
+
+	adev = ACPI_COMPANION(&pdev->dev);
+	if (!adev)
+		return -ENODEV;
 
 	strscpy(acpi_device_name(adev), ACPI_PROCESSOR_AGGREGATOR_DEVICE_NAME);
 	strscpy(acpi_device_class(adev), ACPI_PROCESSOR_AGGREGATOR_CLASS);

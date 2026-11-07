@@ -761,6 +761,7 @@ static int isys_notifier_init(struct ipu6_isys *isys)
 
 err_parse:
 		fwnode_handle_put(ep);
+		v4l2_async_nf_cleanup(&isys->notifier);
 		return ret;
 	}
 
@@ -1089,7 +1090,6 @@ static int isys_probe(struct auxiliary_device *auxdev,
 	INIT_LIST_HEAD(&isys->framebuflist);
 	INIT_LIST_HEAD(&isys->framebuflist_fw);
 
-	isys->line_align = IPU6_ISYS_2600_MEM_LINE_ALIGN;
 	isys->icache_prefetch = 0;
 
 	dev_set_drvdata(&auxdev->dev, isys);
@@ -1294,12 +1294,11 @@ static int isys_isr_one(struct ipu6_bus_device *adev)
 		 */
 		ipu6_put_fw_msg_buf(ipu6_bus_get_drvdata(adev), resp->buf_id);
 		if (resp->pin_id < IPU6_ISYS_OUTPUT_PINS &&
-		    stream->output_pins[resp->pin_id].pin_ready)
-			stream->output_pins[resp->pin_id].pin_ready(stream,
-								    resp);
+		    stream->output_pins_queue[resp->pin_id])
+			ipu6_isys_queue_buf_ready(stream, resp);
 		else
 			dev_warn(&adev->auxdev.dev,
-				 "%d:No data pin ready handler for pin id %d\n",
+				 "%d:No queue for pin id %d\n",
 				 resp->stream_handle, resp->pin_id);
 		if (csi2)
 			ipu6_isys_csi2_error(csi2);

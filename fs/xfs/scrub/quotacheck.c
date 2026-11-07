@@ -263,8 +263,10 @@ xqcheck_mod_live_ino_dqtrx(
 		dqa->tx_id = p->tx_id;
 		error = rhashtable_insert_fast(&xqc->shadow_dquot_acct,
 				&dqa->hash, xqcheck_dqacct_hash_params);
-		if (error)
+		if (error) {
+			kfree(dqa);
 			goto out_abort;
+		}
 	}
 
 	/* Find the shadow dqtrx (or an empty slot) here. */
@@ -505,9 +507,7 @@ xqcheck_collect_counts(
 	 * transactions do not take sb_internal.
 	 */
 	xchk_trans_cancel(sc);
-	error = xchk_trans_alloc_empty(sc);
-	if (error)
-		return error;
+	xchk_trans_alloc_empty(sc);
 
 	while ((error = xchk_iscan_iter(&xqc->iscan, &ip)) == 1) {
 		error = xqcheck_collect_inode(xqc, ip);
@@ -744,7 +744,6 @@ xqcheck_setup_scan(
 	struct xfs_scrub	*sc,
 	struct xqcheck		*xqc)
 {
-	char			*descr;
 	struct xfs_quotainfo	*qi = sc->mp->m_quotainfo;
 	unsigned long long	max_dquots = XFS_DQ_ID_MAX + 1ULL;
 	int			error;
@@ -759,28 +758,22 @@ xqcheck_setup_scan(
 
 	error = -ENOMEM;
 	if (xfs_this_quota_on(sc->mp, XFS_DQTYPE_USER)) {
-		descr = xchk_xfile_descr(sc, "user dquot records");
-		error = xfarray_create(descr, max_dquots,
+		error = xfarray_create("user dquot records", max_dquots,
 				sizeof(struct xqcheck_dquot), &xqc->ucounts);
-		kfree(descr);
 		if (error)
 			goto out_teardown;
 	}
 
 	if (xfs_this_quota_on(sc->mp, XFS_DQTYPE_GROUP)) {
-		descr = xchk_xfile_descr(sc, "group dquot records");
-		error = xfarray_create(descr, max_dquots,
+		error = xfarray_create("group dquot records", max_dquots,
 				sizeof(struct xqcheck_dquot), &xqc->gcounts);
-		kfree(descr);
 		if (error)
 			goto out_teardown;
 	}
 
 	if (xfs_this_quota_on(sc->mp, XFS_DQTYPE_PROJ)) {
-		descr = xchk_xfile_descr(sc, "project dquot records");
-		error = xfarray_create(descr, max_dquots,
+		error = xfarray_create("project dquot records", max_dquots,
 				sizeof(struct xqcheck_dquot), &xqc->pcounts);
-		kfree(descr);
 		if (error)
 			goto out_teardown;
 	}

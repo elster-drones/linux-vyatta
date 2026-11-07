@@ -56,7 +56,8 @@ static int rose_state1_machine(struct sock *sk, struct sk_buff *skb, int framety
 	case ROSE_CLEAR_REQUEST:
 		rose_write_internal(sk, ROSE_CLEAR_CONFIRMATION);
 		rose_disconnect(sk, ECONNREFUSED, skb->data[3], skb->data[4]);
-		rose->neighbour->use--;
+		rose_neigh_put(rose->neighbour);
+		rose->neighbour = NULL;
 		break;
 
 	default:
@@ -79,12 +80,14 @@ static int rose_state2_machine(struct sock *sk, struct sk_buff *skb, int framety
 	case ROSE_CLEAR_REQUEST:
 		rose_write_internal(sk, ROSE_CLEAR_CONFIRMATION);
 		rose_disconnect(sk, 0, skb->data[3], skb->data[4]);
-		rose->neighbour->use--;
+		rose_neigh_put(rose->neighbour);
+		rose->neighbour = NULL;
 		break;
 
 	case ROSE_CLEAR_CONFIRMATION:
 		rose_disconnect(sk, 0, -1, -1);
-		rose->neighbour->use--;
+		rose_neigh_put(rose->neighbour);
+		rose->neighbour = NULL;
 		break;
 
 	default:
@@ -101,6 +104,7 @@ static int rose_state2_machine(struct sock *sk, struct sk_buff *skb, int framety
  */
 static int rose_state3_machine(struct sock *sk, struct sk_buff *skb, int frametype, int ns, int nr, int q, int d, int m)
 {
+	enum skb_drop_reason dr; /* ignored */
 	struct rose_sock *rose = rose_sk(sk);
 	int queued = 0;
 
@@ -120,7 +124,8 @@ static int rose_state3_machine(struct sock *sk, struct sk_buff *skb, int framety
 	case ROSE_CLEAR_REQUEST:
 		rose_write_internal(sk, ROSE_CLEAR_CONFIRMATION);
 		rose_disconnect(sk, 0, skb->data[3], skb->data[4]);
-		rose->neighbour->use--;
+		rose_neigh_put(rose->neighbour);
+		rose->neighbour = NULL;
 		break;
 
 	case ROSE_RR:
@@ -162,7 +167,7 @@ static int rose_state3_machine(struct sock *sk, struct sk_buff *skb, int framety
 		rose_frames_acked(sk, nr);
 		if (ns == rose->vr) {
 			rose_start_idletimer(sk);
-			if (sk_filter_trim_cap(sk, skb, ROSE_MIN_LEN) == 0 &&
+			if (!sk_filter_trim_cap(sk, skb, ROSE_MIN_LEN, &dr) &&
 			    __sock_queue_rcv_skb(sk, skb) == 0) {
 				rose->vr = (rose->vr + 1) % ROSE_MODULUS;
 				queued = 1;
@@ -198,7 +203,18 @@ static int rose_state3_machine(struct sock *sk, struct sk_buff *skb, int framety
 		break;
 
 	default:
-		printk(KERN_WARNING "ROSE: unknown %02X in state 3\n", frametype);
+		/*
+		 * CALL_ACCEPTED (0x0F) and CLEAR_CONFIRMATION (0x17) may show
+		 * up in state 3 as a late or duplicated Call Accepted, or as
+		 * crossed clearing / a reused logical channel on a slow AX.25
+		 * link. These are harmless protocol races, so drop them
+		 * silently. Any other frame type is genuinely unexpected and
+		 * is still reported, rate limited to avoid flooding the log.
+		 */
+		if (frametype != ROSE_CALL_ACCEPTED &&
+		    frametype != ROSE_CLEAR_CONFIRMATION)
+			net_warn_ratelimited("ROSE: unknown %02X in state 3\n",
+					     frametype);
 		break;
 	}
 
@@ -233,7 +249,8 @@ static int rose_state4_machine(struct sock *sk, struct sk_buff *skb, int framety
 	case ROSE_CLEAR_REQUEST:
 		rose_write_internal(sk, ROSE_CLEAR_CONFIRMATION);
 		rose_disconnect(sk, 0, skb->data[3], skb->data[4]);
-		rose->neighbour->use--;
+		rose_neigh_put(rose->neighbour);
+		rose->neighbour = NULL;
 		break;
 
 	default:
@@ -253,7 +270,8 @@ static int rose_state5_machine(struct sock *sk, struct sk_buff *skb, int framety
 	if (frametype == ROSE_CLEAR_REQUEST) {
 		rose_write_internal(sk, ROSE_CLEAR_CONFIRMATION);
 		rose_disconnect(sk, 0, skb->data[3], skb->data[4]);
-		rose_sk(sk)->neighbour->use--;
+		rose_neigh_put(rose_sk(sk)->neighbour);
+		rose_sk(sk)->neighbour = NULL;
 	}
 
 	return 0;
@@ -291,4 +309,35 @@ int rose_process_rx_frame(struct sock *sk, struct sk_buff *skb)
 	rose_kick(sk);
 
 	return queued;
+}
+
+/*
+ * Frames for a socket are processed with the socket locked, as the timers
+ * already do: rose_kick() may be running in rose_sendmsg() on another CPU,
+ * and two of them reading the same V(S) send two different frames under the
+ * same N(S). If a process owns the socket the frame goes to its backlog and
+ * is processed when the socket is released. Returns non-zero if the skb has
+ * been consumed.
+ */
+int rose_rcv_frame(struct sock *sk, struct sk_buff *skb)
+{
+	int queued;
+
+	bh_lock_sock(sk);
+	if (!sock_owned_by_user(sk))
+		queued = rose_process_rx_frame(sk, skb);
+	else
+		queued = !sk_add_backlog(sk, skb, READ_ONCE(sk->sk_rcvbuf) +
+						  READ_ONCE(sk->sk_sndbuf));
+	bh_unlock_sock(sk);
+
+	return queued;
+}
+
+int rose_backlog_rcv(struct sock *sk, struct sk_buff *skb)
+{
+	if (!rose_process_rx_frame(sk, skb))
+		kfree_skb(skb);
+
+	return 0;
 }

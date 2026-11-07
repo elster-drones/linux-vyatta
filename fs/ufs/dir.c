@@ -48,7 +48,7 @@ static void ufs_commit_chunk(struct folio *folio, loff_t pos, unsigned len)
 	struct inode *dir = mapping->host;
 
 	inode_inc_iversion(dir);
-	block_write_end(NULL, mapping, pos, len, len, folio, NULL);
+	block_write_end(pos, len, len, folio);
 	if (pos+len > dir->i_size) {
 		i_size_write(dir, pos+len);
 		mark_inode_dirty(dir);
@@ -212,7 +212,7 @@ fail:
 static unsigned
 ufs_last_byte(struct inode *inode, unsigned long page_nr)
 {
-	unsigned last_byte = inode->i_size;
+	u64 last_byte = inode->i_size;
 
 	last_byte -= page_nr << PAGE_SHIFT;
 	if (last_byte > PAGE_SIZE)
@@ -589,7 +589,7 @@ int ufs_empty_dir(struct inode * inode)
 
 		kaddr = ufs_get_folio(inode, i, &folio);
 		if (IS_ERR(kaddr))
-			continue;
+			return 0;
 
 		de = (struct ufs_dir_entry *)kaddr;
 		kaddr += ufs_last_byte(inode, i) - UFS_DIR_REC_LEN(1);

@@ -303,13 +303,6 @@ static int do_aspeed_spi_exec_op(struct spi_mem *mem, const struct spi_mem_op *o
 	u32 ctl_val;
 	int ret = 0;
 
-	dev_dbg(aspi->dev,
-		"CE%d %s OP %#x mode:%d.%d.%d.%d naddr:%#x ndummies:%#x len:%#x",
-		chip->cs, op->data.dir == SPI_MEM_DATA_IN ? "read" : "write",
-		op->cmd.opcode, op->cmd.buswidth, op->addr.buswidth,
-		op->dummy.buswidth, op->data.buswidth,
-		op->addr.nbytes, op->dummy.nbytes, op->data.nbytes);
-
 	addr_mode = readl(aspi->regs + CE_CTRL_REG);
 	addr_mode_backup = addr_mode;
 
@@ -733,7 +726,7 @@ static int aspeed_spi_probe(struct platform_device *pdev)
 		return -ENOMEM;
 
 	aspi = spi_controller_get_devdata(ctlr);
-	platform_set_drvdata(pdev, aspi);
+	platform_set_drvdata(pdev, ctlr);
 	aspi->data = data;
 	aspi->dev = dev;
 
@@ -772,7 +765,7 @@ static int aspeed_spi_probe(struct platform_device *pdev)
 	ctlr->num_chipselect = data->max_cs;
 	ctlr->dev.of_node = dev->of_node;
 
-	ret = devm_spi_register_controller(dev, ctlr);
+	ret = spi_register_controller(ctlr);
 	if (ret)
 		dev_err(&pdev->dev, "spi_register_controller failed\n");
 
@@ -781,7 +774,10 @@ static int aspeed_spi_probe(struct platform_device *pdev)
 
 static void aspeed_spi_remove(struct platform_device *pdev)
 {
-	struct aspeed_spi *aspi = platform_get_drvdata(pdev);
+	struct spi_controller *ctlr = platform_get_drvdata(pdev);
+	struct aspeed_spi *aspi = spi_controller_get_devdata(ctlr);
+
+	spi_unregister_controller(ctlr);
 
 	aspeed_spi_enable(aspi, false);
 }

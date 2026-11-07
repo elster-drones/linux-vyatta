@@ -8,7 +8,6 @@
 
 #include <linux/firmware.h>
 #include <linux/i2c.h>
-#include <linux/of_gpio.h>
 #include <linux/regmap.h>
 #include <sound/pcm_params.h>
 #include <sound/tlv.h>
@@ -1019,14 +1018,9 @@ static const struct snd_kcontrol_new sma1307_aif_out1_source_control = {
 	.private_value = (unsigned long)&sma1307_aif_out_source_enum
 };
 
-static const struct snd_kcontrol_new sma1307_sdo_control = {
-	.iface = SNDRV_CTL_ELEM_IFACE_MIXER,
-	.name = "Switch",
-	.info = snd_soc_info_volsw,
-	.get = sma1307_dapm_sdo_enable_get,
-	.put = sma1307_dapm_sdo_enable_put,
-	.private_value = SOC_SINGLE_VALUE(SND_SOC_NOPM, 0, 1, 0, 0)
-};
+static const struct snd_kcontrol_new sma1307_sdo_control =
+	SOC_SINGLE_EXT("Switch", SND_SOC_NOPM, 0, 1, 0,
+		       sma1307_dapm_sdo_enable_get, sma1307_dapm_sdo_enable_put);
 
 static const struct snd_kcontrol_new sma1307_enable_control =
 	SOC_DAPM_SINGLE("Switch", SMA1307_00_SYSTEM_CTRL, 0, 1, 0);
@@ -1618,6 +1612,7 @@ static void sma1307_check_fault_worker(struct work_struct *work)
 	struct sma1307_priv *sma1307 =
 	    container_of(work, struct sma1307_priv, check_fault_work.work);
 	unsigned int status1_val, status2_val;
+	char volume[sizeof("VOLUME=0x12345678")];
 	char *envp[3] = { NULL, NULL, NULL };
 
 	if (sma1307->tsdw_cnt)
@@ -1633,7 +1628,7 @@ static void sma1307_check_fault_worker(struct work_struct *work)
 	if (~status1_val & SMA1307_OT1_OK_STATUS) {
 		dev_crit(sma1307->dev,
 			 "%s: OT1(Over Temperature Level 1)\n", __func__);
-		envp[0] = kasprintf(GFP_KERNEL, "STATUS=OT1");
+		envp[0] = "STATUS=OT1";
 		if (sma1307->sw_ot1_prot) {
 			/* Volume control (Current Volume -3dB) */
 			if ((sma1307->cur_vol + 6) <= 0xFA) {
@@ -1641,8 +1636,9 @@ static void sma1307_check_fault_worker(struct work_struct *work)
 				regmap_write(sma1307->regmap,
 						     SMA1307_0A_SPK_VOL,
 						     sma1307->cur_vol);
-				envp[1] = kasprintf(GFP_KERNEL,
-					"VOLUME=0x%02X", sma1307->cur_vol);
+				snprintf(volume, sizeof(volume),
+					 "VOLUME=0x%02X", sma1307->cur_vol);
+				envp[1] = volume;
 			}
 		}
 		sma1307->tsdw_cnt++;
@@ -1651,48 +1647,53 @@ static void sma1307_check_fault_worker(struct work_struct *work)
 				     SMA1307_0A_SPK_VOL, sma1307->init_vol);
 		sma1307->tsdw_cnt = 0;
 		sma1307->cur_vol = sma1307->init_vol;
-		envp[0] = kasprintf(GFP_KERNEL, "STATUS=OT1_CLEAR");
-		envp[1] = kasprintf(GFP_KERNEL,
-				"VOLUME=0x%02X", sma1307->cur_vol);
+		envp[0] = "STATUS=OT1_CLEAR";
+		snprintf(volume, sizeof(volume), "VOLUME=0x%02X",
+			 sma1307->cur_vol);
+		envp[1] = volume;
 	}
 
 	if (~status1_val & SMA1307_OT2_OK_STATUS) {
 		dev_crit(sma1307->dev,
 			 "%s: OT2(Over Temperature Level 2)\n", __func__);
-		envp[0] = kasprintf(GFP_KERNEL, "STATUS=OT2");
+		envp[0] = "STATUS=OT2";
+		envp[1] = NULL;
 	}
 	if (status1_val & SMA1307_UVLO_STATUS) {
 		dev_crit(sma1307->dev,
 			 "%s: UVLO(Under Voltage Lock Out)\n", __func__);
-		envp[0] = kasprintf(GFP_KERNEL, "STATUS=UVLO");
+		envp[0] = "STATUS=UVLO";
+		envp[1] = NULL;
 	}
 	if (status1_val & SMA1307_OVP_BST_STATUS) {
 		dev_crit(sma1307->dev,
 			 "%s: OVP_BST(Over Voltage Protection)\n", __func__);
-		envp[0] = kasprintf(GFP_KERNEL, "STATUS=OVP_BST");
+		envp[0] = "STATUS=OVP_BST";
+		envp[1] = NULL;
 	}
 	if (status2_val & SMA1307_OCP_SPK_STATUS) {
 		dev_crit(sma1307->dev,
 			 "%s: OCP_SPK(Over Current Protect SPK)\n", __func__);
-		envp[0] = kasprintf(GFP_KERNEL, "STATUS=OCP_SPK");
+		envp[0] = "STATUS=OCP_SPK";
+		envp[1] = NULL;
 	}
 	if (status2_val & SMA1307_OCP_BST_STATUS) {
 		dev_crit(sma1307->dev,
 			 "%s: OCP_BST(Over Current Protect Boost)\n", __func__);
-		envp[0] = kasprintf(GFP_KERNEL, "STATUS=OCP_BST");
+		envp[0] = "STATUS=OCP_BST";
+		envp[1] = NULL;
 	}
 	if (status2_val & SMA1307_CLK_MON_STATUS) {
 		dev_crit(sma1307->dev,
 			 "%s: CLK_FAULT(No clock input)\n", __func__);
-		envp[0] = kasprintf(GFP_KERNEL, "STATUS=CLK_FAULT");
+		envp[0] = "STATUS=CLK_FAULT";
+		envp[1] = NULL;
 	}
 
 	if (envp[0] != NULL) {
 		if (kobject_uevent_env(sma1307->kobj, KOBJ_CHANGE, envp))
 			dev_err(sma1307->dev,
 				"%s: Error sending uevent\n", __func__);
-		kfree(envp[0]);
-		kfree(envp[1]);
 	}
 
 	if (sma1307->check_fault_status) {
@@ -1710,7 +1711,7 @@ static void sma1307_check_fault_worker(struct work_struct *work)
 static void sma1307_setting_loaded(struct sma1307_priv *sma1307, const char *file)
 {
 	const struct firmware *fw;
-	int *data, size, offset, num_mode;
+	int size, offset, num_mode;
 	int ret;
 
 	ret = request_firmware(&fw, file, sma1307->dev);
@@ -1727,7 +1728,12 @@ static void sma1307_setting_loaded(struct sma1307_priv *sma1307, const char *fil
 		return;
 	}
 
-	data = kzalloc(fw->size, GFP_KERNEL);
+	int *data __free(kfree) = kzalloc(fw->size, GFP_KERNEL);
+	if (!data) {
+		release_firmware(fw);
+		sma1307->set.status = false;
+		return;
+	}
 	size = fw->size >> 2;
 	memcpy(data, fw->data, fw->size);
 
@@ -1738,14 +1744,20 @@ static void sma1307_setting_loaded(struct sma1307_priv *sma1307, const char *fil
 	sma1307->set.checksum = data[sma1307->set.header_size - 2];
 	sma1307->set.num_mode = data[sma1307->set.header_size - 1];
 	num_mode = sma1307->set.num_mode;
-	sma1307->set.header = devm_kzalloc(sma1307->dev,
-					   sma1307->set.header_size,
-					   GFP_KERNEL);
+	sma1307->set.header = devm_kmalloc_array(sma1307->dev,
+						 sma1307->set.header_size,
+						 sizeof(int),
+						 GFP_KERNEL);
+	if (!sma1307->set.header) {
+		sma1307->set.status = false;
+		return;
+	}
+
 	memcpy(sma1307->set.header, data,
 	       sma1307->set.header_size * sizeof(int));
 
 	if ((sma1307->set.checksum >> 8) != SMA1307_SETTING_CHECKSUM) {
-		dev_err(sma1307->dev, "%s: failed by dismatch \"%s\"\n",
+		dev_err(sma1307->dev, "%s: checksum failed \"%s\"\n",
 			__func__, setting_file);
 		sma1307->set.status = false;
 		return;
@@ -1756,6 +1768,11 @@ static void sma1307_setting_loaded(struct sma1307_priv *sma1307, const char *fil
 	sma1307->set.def
 	    = devm_kzalloc(sma1307->dev,
 			   sma1307->set.def_size * sizeof(int), GFP_KERNEL);
+	if (!sma1307->set.def) {
+		sma1307->set.status = false;
+		return;
+	}
+
 	memcpy(sma1307->set.def,
 	       &data[sma1307->set.header_size],
 	       sma1307->set.def_size * sizeof(int));
@@ -1768,6 +1785,15 @@ static void sma1307_setting_loaded(struct sma1307_priv *sma1307, const char *fil
 		    = devm_kzalloc(sma1307->dev,
 				   sma1307->set.mode_size * 2 * sizeof(int),
 				   GFP_KERNEL);
+		if (!sma1307->set.mode_set[i]) {
+			for (int j = 0; j < i; j++) {
+				devm_kfree(sma1307->dev, sma1307->set.mode_set[j]);
+				sma1307->set.mode_set[j] = NULL;
+			}
+			sma1307->set.status = false;
+			return;
+		}
+
 		for (int j = 0; j < sma1307->set.mode_size; j++) {
 			sma1307->set.mode_set[i][2 * j]
 			    = data[offset + ((num_mode + 1) * j)];
@@ -1776,7 +1802,6 @@ static void sma1307_setting_loaded(struct sma1307_priv *sma1307, const char *fil
 		}
 	}
 
-	kfree(data);
 	sma1307->set.status = true;
 
 }

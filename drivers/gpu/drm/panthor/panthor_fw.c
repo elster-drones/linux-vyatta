@@ -201,7 +201,6 @@ struct panthor_fw_section {
 
 #define MIN_CS_PER_CSG				8
 #define MIN_CSGS				3
-#define MAX_CSG_PRIO				0xf
 
 #define CSF_IFACE_VERSION(major, minor, patch)	\
 	(((major) << 24) | ((minor) << 16) | (patch))
@@ -450,7 +449,8 @@ panthor_fw_alloc_queue_iface_mem(struct panthor_device *ptdev,
 				       DRM_PANTHOR_BO_NO_MMAP,
 				       DRM_PANTHOR_VM_BIND_OP_MAP_NOEXEC |
 				       DRM_PANTHOR_VM_BIND_OP_MAP_UNCACHED,
-				       PANTHOR_VM_KERNEL_AUTO_VA);
+				       PANTHOR_VM_KERNEL_AUTO_VA,
+				       "Queue FW interface");
 	if (IS_ERR(mem))
 		return mem;
 
@@ -482,7 +482,8 @@ panthor_fw_alloc_suspend_buf_mem(struct panthor_device *ptdev, size_t size)
 	return panthor_kernel_bo_create(ptdev, panthor_fw_vm(ptdev), size,
 					DRM_PANTHOR_BO_NO_MMAP,
 					DRM_PANTHOR_VM_BIND_OP_MAP_NOEXEC,
-					PANTHOR_VM_KERNEL_AUTO_VA);
+					PANTHOR_VM_KERNEL_AUTO_VA,
+					"FW suspend buffer");
 }
 
 static int panthor_fw_load_section_entry(struct panthor_device *ptdev,
@@ -494,6 +495,7 @@ static int panthor_fw_load_section_entry(struct panthor_device *ptdev,
 	struct panthor_fw_binary_section_entry_hdr hdr;
 	struct panthor_fw_section *section;
 	u32 section_size;
+	u32 data_size;
 	u32 name_len;
 	int ret;
 
@@ -544,6 +546,16 @@ static int panthor_fw_load_section_entry(struct panthor_device *ptdev,
 		return -EINVAL;
 	}
 
+	section_size = hdr.va.end - hdr.va.start;
+	data_size = hdr.data.end - hdr.data.start;
+	if (data_size > section_size) {
+		drm_err(&ptdev->base, "Firmware corrupted, section data exceeds section size\n");
+		return -EINVAL;
+	}
+
+	if (!section_size)
+		return 0;
+
 	name_len = iter->size - iter->offset;
 
 	section = drmm_kzalloc(&ptdev->base, sizeof(*section), GFP_KERNEL);
@@ -552,7 +564,7 @@ static int panthor_fw_load_section_entry(struct panthor_device *ptdev,
 
 	list_add_tail(&section->node, &ptdev->fw->sections);
 	section->flags = hdr.flags;
-	section->data.size = hdr.data.end - hdr.data.start;
+	section->data.size = data_size;
 
 	if (section->data.size > 0) {
 		void *data = drmm_kmalloc(&ptdev->base, section->data.size, GFP_KERNEL);
@@ -575,7 +587,6 @@ static int panthor_fw_load_section_entry(struct panthor_device *ptdev,
 		section->name = name;
 	}
 
-	section_size = hdr.va.end - hdr.va.start;
 	if (section_size) {
 		u32 cache_mode = hdr.flags & CSF_FW_BINARY_IFACE_ENTRY_CACHE_MODE_MASK;
 		struct panthor_gem_object *bo;
@@ -602,7 +613,7 @@ static int panthor_fw_load_section_entry(struct panthor_device *ptdev,
 		section->mem = panthor_kernel_bo_create(ptdev, panthor_fw_vm(ptdev),
 							section_size,
 							DRM_PANTHOR_BO_NO_MMAP,
-							vm_map_flags, va);
+							vm_map_flags, va, "FW section");
 		if (IS_ERR(section->mem))
 			return PTR_ERR(section->mem);
 
@@ -637,8 +648,8 @@ static int panthor_fw_read_build_info(struct panthor_device *ptdev,
 				      u32 ehdr)
 {
 	struct panthor_fw_build_info_hdr hdr;
-	char header[9];
-	const char git_sha_header[sizeof(header)] = "git_sha: ";
+	static const char git_sha_header[] = "git_sha: ";
+	const int header_len = sizeof(git_sha_header) - 1;
 	int ret;
 
 	ret = panthor_fw_binary_iter_read(ptdev, iter, &hdr, sizeof(hdr));
@@ -646,14 +657,14 @@ static int panthor_fw_read_build_info(struct panthor_device *ptdev,
 		return ret;
 
 	if (hdr.meta_start > fw->size ||
-	    hdr.meta_start + hdr.meta_size > fw->size) {
+	    hdr.meta_size > fw->size - hdr.meta_start ||
+	    hdr.meta_size <= header_len) {
 		drm_err(&ptdev->base, "Firmware build info corrupt\n");
 		/* We don't need the build info, so continue */
 		return 0;
 	}
 
-	if (memcmp(git_sha_header, fw->data + hdr.meta_start,
-		   sizeof(git_sha_header))) {
+	if (memcmp(git_sha_header, fw->data + hdr.meta_start, header_len)) {
 		/* Not the expected header, this isn't metadata we understand */
 		return 0;
 	}
@@ -666,7 +677,7 @@ static int panthor_fw_read_build_info(struct panthor_device *ptdev,
 	}
 
 	drm_info(&ptdev->base, "Firmware git sha: %s\n",
-		 fw->data + hdr.meta_start + sizeof(git_sha_header));
+		 fw->data + hdr.meta_start + header_len);
 
 	return 0;
 }
@@ -777,6 +788,7 @@ static int panthor_fw_load(struct panthor_device *ptdev)
 	}
 
 	if (hdr.size > iter.size) {
+		ret = -EINVAL;
 		drm_err(&ptdev->base, "Firmware image is truncated\n");
 		goto out;
 	}
@@ -804,18 +816,24 @@ out:
  * iface_fw_to_cpu_addr() - Turn an MCU address into a CPU address
  * @ptdev: Device.
  * @mcu_va: MCU address.
+ * @size: Size of the object pointed to by @mcu_va.
  *
- * Return: NULL if the address is not part of the shared section, non-NULL otherwise.
+ * Return: NULL if the object is not part of the shared section, non-NULL otherwise.
  */
-static void *iface_fw_to_cpu_addr(struct panthor_device *ptdev, u32 mcu_va)
+static void *iface_fw_to_cpu_addr(struct panthor_device *ptdev, u32 mcu_va, size_t size)
 {
 	u64 shared_mem_start = panthor_kernel_bo_gpuva(ptdev->fw->shared_section->mem);
-	u64 shared_mem_end = shared_mem_start +
-			     panthor_kernel_bo_size(ptdev->fw->shared_section->mem);
-	if (mcu_va < shared_mem_start || mcu_va >= shared_mem_end)
+	size_t shared_mem_size = panthor_kernel_bo_size(ptdev->fw->shared_section->mem);
+	u64 offset;
+
+	if (mcu_va < shared_mem_start)
 		return NULL;
 
-	return ptdev->fw->shared_section->mem->kmap + (mcu_va - shared_mem_start);
+	offset = mcu_va - shared_mem_start;
+	if (offset > shared_mem_size || size > shared_mem_size - offset)
+		return NULL;
+
+	return ptdev->fw->shared_section->mem->kmap + offset;
 }
 
 static int panthor_init_cs_iface(struct panthor_device *ptdev,
@@ -825,20 +843,23 @@ static int panthor_init_cs_iface(struct panthor_device *ptdev,
 	struct panthor_fw_csg_iface *csg_iface = panthor_fw_get_csg_iface(ptdev, csg_idx);
 	struct panthor_fw_cs_iface *cs_iface = &ptdev->fw->iface.streams[csg_idx][cs_idx];
 	u64 shared_section_sz = panthor_kernel_bo_size(ptdev->fw->shared_section->mem);
-	u32 iface_offset = CSF_GROUP_CONTROL_OFFSET +
-			   (csg_idx * glb_iface->control->group_stride) +
+	u64 iface_offset = CSF_GROUP_CONTROL_OFFSET +
+			   ((u64)csg_idx * glb_iface->control->group_stride) +
 			   CSF_STREAM_CONTROL_OFFSET +
-			   (cs_idx * csg_iface->control->stream_stride);
+			   ((u64)cs_idx * csg_iface->control->stream_stride);
 	struct panthor_fw_cs_iface *first_cs_iface =
 		panthor_fw_get_cs_iface(ptdev, 0, 0);
 
-	if (iface_offset + sizeof(*cs_iface) >= shared_section_sz)
+	if (iface_offset > shared_section_sz ||
+	    sizeof(*cs_iface->control) > shared_section_sz - iface_offset)
 		return -EINVAL;
 
 	spin_lock_init(&cs_iface->lock);
 	cs_iface->control = ptdev->fw->shared_section->mem->kmap + iface_offset;
-	cs_iface->input = iface_fw_to_cpu_addr(ptdev, cs_iface->control->input_va);
-	cs_iface->output = iface_fw_to_cpu_addr(ptdev, cs_iface->control->output_va);
+	cs_iface->input = iface_fw_to_cpu_addr(ptdev, cs_iface->control->input_va,
+					       sizeof(*cs_iface->input));
+	cs_iface->output = iface_fw_to_cpu_addr(ptdev, cs_iface->control->output_va,
+						sizeof(*cs_iface->output));
 
 	if (!cs_iface->input || !cs_iface->output) {
 		drm_err(&ptdev->base, "Invalid stream control interface input/output VA");
@@ -880,16 +901,20 @@ static int panthor_init_csg_iface(struct panthor_device *ptdev,
 	struct panthor_fw_global_iface *glb_iface = panthor_fw_get_glb_iface(ptdev);
 	struct panthor_fw_csg_iface *csg_iface = &ptdev->fw->iface.groups[csg_idx];
 	u64 shared_section_sz = panthor_kernel_bo_size(ptdev->fw->shared_section->mem);
-	u32 iface_offset = CSF_GROUP_CONTROL_OFFSET + (csg_idx * glb_iface->control->group_stride);
+	u64 iface_offset = CSF_GROUP_CONTROL_OFFSET +
+			   ((u64)csg_idx * glb_iface->control->group_stride);
 	unsigned int i;
 
-	if (iface_offset + sizeof(*csg_iface) >= shared_section_sz)
+	if (iface_offset > shared_section_sz ||
+	    sizeof(*csg_iface->control) > shared_section_sz - iface_offset)
 		return -EINVAL;
 
 	spin_lock_init(&csg_iface->lock);
 	csg_iface->control = ptdev->fw->shared_section->mem->kmap + iface_offset;
-	csg_iface->input = iface_fw_to_cpu_addr(ptdev, csg_iface->control->input_va);
-	csg_iface->output = iface_fw_to_cpu_addr(ptdev, csg_iface->control->output_va);
+	csg_iface->input = iface_fw_to_cpu_addr(ptdev, csg_iface->control->input_va,
+						sizeof(*csg_iface->input));
+	csg_iface->output = iface_fw_to_cpu_addr(ptdev, csg_iface->control->output_va,
+						 sizeof(*csg_iface->output));
 
 	if (csg_iface->control->stream_num < MIN_CS_PER_CSG ||
 	    csg_iface->control->stream_num > MAX_CS_PER_CSG)
@@ -933,9 +958,13 @@ static u32 panthor_get_instr_features(struct panthor_device *ptdev)
 static int panthor_fw_init_ifaces(struct panthor_device *ptdev)
 {
 	struct panthor_fw_global_iface *glb_iface = &ptdev->fw->iface.global;
+	u64 shared_section_sz = panthor_kernel_bo_size(ptdev->fw->shared_section->mem);
 	unsigned int i;
 
 	if (!ptdev->fw->shared_section->mem->kmap)
+		return -EINVAL;
+
+	if (sizeof(*glb_iface->control) > shared_section_sz)
 		return -EINVAL;
 
 	spin_lock_init(&glb_iface->lock);
@@ -946,8 +975,10 @@ static int panthor_fw_init_ifaces(struct panthor_device *ptdev)
 		return -EINVAL;
 	}
 
-	glb_iface->input = iface_fw_to_cpu_addr(ptdev, glb_iface->control->input_va);
-	glb_iface->output = iface_fw_to_cpu_addr(ptdev, glb_iface->control->output_va);
+	glb_iface->input = iface_fw_to_cpu_addr(ptdev, glb_iface->control->input_va,
+						sizeof(*glb_iface->input));
+	glb_iface->output = iface_fw_to_cpu_addr(ptdev, glb_iface->control->output_va,
+						 sizeof(*glb_iface->output));
 	if (!glb_iface->input || !glb_iface->output) {
 		drm_err(&ptdev->base, "Invalid global control interface input/output VA");
 		return -EINVAL;
@@ -1010,6 +1041,8 @@ static void panthor_fw_init_global_iface(struct panthor_device *ptdev)
 
 static void panthor_job_irq_handler(struct panthor_device *ptdev, u32 status)
 {
+	gpu_write(ptdev, JOB_INT_CLEAR, status);
+
 	if (!ptdev->fw->booted && (status & JOB_INT_GLOBAL_IF))
 		ptdev->fw->booted = true;
 
@@ -1061,8 +1094,8 @@ static void panthor_fw_stop(struct panthor_device *ptdev)
 	u32 status;
 
 	gpu_write(ptdev, MCU_CONTROL, MCU_CONTROL_DISABLE);
-	if (readl_poll_timeout(ptdev->iomem + MCU_STATUS, status,
-			       status == MCU_STATUS_DISABLED, 10, 100000))
+	if (gpu_read_poll_timeout(ptdev, MCU_STATUS, status,
+				  status == MCU_STATUS_DISABLED, 10, 100000))
 		drm_err(&ptdev->base, "Failed to stop MCU");
 }
 
@@ -1087,8 +1120,9 @@ void panthor_fw_pre_reset(struct panthor_device *ptdev, bool on_hang)
 
 		panthor_fw_update_reqs(glb_iface, req, GLB_HALT, GLB_HALT);
 		gpu_write(ptdev, CSF_DOORBELL(CSF_GLB_DOORBELL_ID), 1);
-		if (!readl_poll_timeout(ptdev->iomem + MCU_STATUS, status,
-					status == MCU_STATUS_HALT, 10, 100000)) {
+		if (!gpu_read_poll_timeout(ptdev, MCU_STATUS, status,
+					   status == MCU_STATUS_HALT, 10,
+					   100000)) {
 			ptdev->reset.fast = true;
 		} else {
 			drm_warn(&ptdev->base, "Failed to cleanly suspend MCU");
@@ -1096,6 +1130,7 @@ void panthor_fw_pre_reset(struct panthor_device *ptdev, bool on_hang)
 	}
 
 	panthor_job_irq_suspend(&ptdev->fw->irq);
+	panthor_fw_stop(ptdev);
 }
 
 /**
@@ -1399,3 +1434,8 @@ err_unplug_fw:
 }
 
 MODULE_FIRMWARE("arm/mali/arch10.8/mali_csffw.bin");
+MODULE_FIRMWARE("arm/mali/arch10.10/mali_csffw.bin");
+MODULE_FIRMWARE("arm/mali/arch10.12/mali_csffw.bin");
+MODULE_FIRMWARE("arm/mali/arch11.8/mali_csffw.bin");
+MODULE_FIRMWARE("arm/mali/arch12.8/mali_csffw.bin");
+MODULE_FIRMWARE("arm/mali/arch13.8/mali_csffw.bin");

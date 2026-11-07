@@ -7,6 +7,7 @@
 
 #include <linux/unaligned.h>
 #include <linux/bitfield.h>
+#include <linux/cleanup.h>
 #include <linux/i2c.h>
 #include <linux/iio/events.h>
 #include <linux/iio/iio.h>
@@ -899,7 +900,7 @@ static ssize_t pac1921_read_scale_avail(struct iio_dev *indio_dev,
 
 static const struct iio_chan_spec_ext_info pac1921_ext_info_voltage[] = {
 	PAC1921_EXT_INFO_SCALE_AVAIL,
-	{}
+	{ }
 };
 
 static const struct iio_chan_spec_ext_info pac1921_ext_info_current[] = {
@@ -910,7 +911,7 @@ static const struct iio_chan_spec_ext_info pac1921_ext_info_current[] = {
 		.write = pac1921_write_shunt_resistor,
 		.shared = IIO_SEPARATE,
 	},
-	{}
+	{ }
 };
 
 static const struct iio_event_spec pac1921_overflow_event[] = {
@@ -1036,14 +1037,15 @@ static irqreturn_t pac1921_trigger_handler(int irq, void *p)
 	iio_for_each_active_channel(idev, bit) {
 		u16 val;
 
-		ret = pac1921_read_res(priv, idev->channels[ch].address, &val);
+		ret = pac1921_read_res(priv, idev->channels[bit].address, &val);
 		if (ret)
 			goto done;
 
 		priv->scan.chan[ch++] = val;
 	}
 
-	iio_push_to_buffers_with_timestamp(idev, &priv->scan, pf->timestamp);
+	iio_push_to_buffers_with_ts(idev, &priv->scan, sizeof(priv->scan),
+				    pf->timestamp);
 
 done:
 	iio_trigger_notify_done(idev->trig);
@@ -1198,11 +1200,11 @@ static int pac1921_match_acpi_device(struct iio_dev *indio_dev)
 
 	label = devm_kstrdup(dev, status->package.elements[0].string.pointer,
 			     GFP_KERNEL);
+	ACPI_FREE(status);
 	if (!label)
 		return -ENOMEM;
 
 	indio_dev->label = label;
-	ACPI_FREE(status);
 
 	return 0;
 }
@@ -1277,8 +1279,7 @@ static int pac1921_probe(struct i2c_client *client)
 	ret = devm_add_action_or_reset(dev, pac1921_regulator_disable,
 				       priv->vdd);
 	if (ret)
-		return dev_err_probe(dev, ret,
-			"Cannot add action for vdd regulator disposal\n");
+		return ret;
 
 	msleep(PAC1921_POWERUP_TIME_MS);
 

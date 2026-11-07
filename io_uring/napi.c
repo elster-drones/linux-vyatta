@@ -6,7 +6,7 @@
 #ifdef CONFIG_NET_RX_BUSY_POLL
 
 /* Timeout for cleanout of stale entries. */
-#define NAPI_TIMEOUT		(60 * SEC_CONVERSION)
+#define NAPI_TIMEOUT		(60 * HZ)
 
 struct io_napi_entry {
 	unsigned int		napi_id;
@@ -44,7 +44,7 @@ int __io_napi_add_id(struct io_ring_ctx *ctx, unsigned int napi_id)
 	struct io_napi_entry *e;
 
 	/* Non-NAPI IDs can be rejected. */
-	if (napi_id < MIN_NAPI_ID)
+	if (!napi_id_valid(napi_id))
 		return -EINVAL;
 
 	hash_list = &ctx->napi_ht[hash_min(napi_id, HASH_BITS(ctx->napi_ht))];
@@ -87,7 +87,7 @@ static int __io_napi_del_id(struct io_ring_ctx *ctx, unsigned int napi_id)
 	struct io_napi_entry *e;
 
 	/* Non-NAPI IDs can be rejected. */
-	if (napi_id < MIN_NAPI_ID)
+	if (!napi_id_valid(napi_id))
 		return -EINVAL;
 
 	hash_list = &ctx->napi_ht[hash_min(napi_id, HASH_BITS(ctx->napi_ht))];
@@ -276,6 +276,8 @@ static int io_napi_register_napi(struct io_ring_ctx *ctx,
 	/* clean the napi list for new settings */
 	io_napi_free(ctx);
 	WRITE_ONCE(ctx->napi_track_mode, napi->op_param);
+	/* cap NAPI at 10 msec of spin time */
+	napi->busy_poll_to = min(10000, napi->busy_poll_to);
 	WRITE_ONCE(ctx->napi_busy_poll_dt, napi->busy_poll_to * NSEC_PER_USEC);
 	WRITE_ONCE(ctx->napi_prefer_busy_poll, !!napi->prefer_busy_poll);
 	return 0;
@@ -363,6 +365,8 @@ void __io_napi_busy_loop(struct io_ring_ctx *ctx, struct io_wait_queue *iowq)
 	if (iowq->timeout != KTIME_MAX) {
 		ktime_t dt = ktime_sub(iowq->timeout, io_get_time(ctx));
 
+		/* an absolute timeout may have passed already */
+		dt = max_t(ktime_t, dt, 0);
 		iowq->napi_busy_poll_dt = min_t(u64, iowq->napi_busy_poll_dt, dt);
 	}
 

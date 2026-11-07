@@ -134,7 +134,7 @@ ns4=""
 TEST_GROUP=""
 
 # This function is used in the cleanup trap
-#shellcheck disable=SC2317
+#shellcheck disable=SC2317,SC2329
 cleanup()
 {
 	rm -f "$cin_disconnect"
@@ -209,6 +209,11 @@ if $checksum; then
 	for i in "$ns1" "$ns2" "$ns3" "$ns4";do
 		ip netns exec $i sysctl -q net.mptcp.checksum_enabled=1
 	done
+fi
+
+if $capture; then
+	rndh="${ns1:4}"
+	mptcp_lib_pr_info "Packet capture files will have this prefix: ${rndh}-"
 fi
 
 set_ethtool_flags() {
@@ -361,7 +366,6 @@ do_transfer()
 
 	if $capture; then
 		local capuser
-		local rndh="${connector_ns:4}"
 		if [ -z $SUDO_USER ] ; then
 			capuser=""
 		else
@@ -411,7 +415,7 @@ do_transfer()
 	mptcp_lib_wait_local_port_listen "${listener_ns}" "${port}"
 
 	local start
-	start=$(date +%s%3N)
+	start=$(date +%s%N)
 	timeout ${timeout_test} \
 		ip netns exec ${connector_ns} \
 			./mptcp_connect -t ${timeout_poll} -p $port -s ${cl_proto} \
@@ -424,7 +428,7 @@ do_transfer()
 	local rets=$?
 
 	local stop
-	stop=$(date +%s%3N)
+	stop=$(date +%s%N)
 
 	if $capture; then
 		sleep 1
@@ -440,7 +444,7 @@ do_transfer()
 	fi
 
 	local duration
-	duration=$((stop-start))
+	duration=$(((stop-start) / 1000000))
 	printf "(duration %05sms) " "${duration}"
 	if [ ${rets} -ne 0 ] || [ ${retc} -ne 0 ]; then
 		mptcp_lib_pr_fail "client exit code $retc, server $rets"
@@ -488,7 +492,7 @@ do_transfer()
 				  "than expected (${expect_synrx})"
 		retc=1
 	fi
-	if [ ${stat_ackrx_now_l} -lt ${expect_ackrx} ] && [ ${stat_ooo_now} -eq 0 ]; then
+	if [ ${stat_ackrx_now_l} -lt ${expect_ackrx} ]; then
 		if [ ${stat_ooo_now} -eq 0 ]; then
 			mptcp_lib_pr_fail "lower MPC ACK rx (${stat_ackrx_now_l})" \
 					  "than expected (${expect_ackrx})"

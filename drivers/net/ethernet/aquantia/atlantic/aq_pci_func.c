@@ -371,7 +371,7 @@ static void aq_pci_shutdown(struct pci_dev *pdev)
 	pci_disable_device(pdev);
 
 	if (system_state == SYSTEM_POWER_OFF) {
-		pci_wake_from_d3(pdev, false);
+		pci_wake_from_d3(pdev, self->aq_hw->aq_nic_cfg->wol);
 		pci_set_power_state(pdev, PCI_D3hot);
 	}
 }
@@ -463,7 +463,7 @@ static const struct dev_pm_ops aq_pm_ops = {
 };
 #endif
 
-static struct pci_driver aq_pci_ops = {
+static struct pci_driver aq_pci_driver = {
 	.name = AQ_CFG_DRV_NAME,
 	.id_table = aq_pci_tbl,
 	.probe = aq_pci_probe,
@@ -476,11 +476,11 @@ static struct pci_driver aq_pci_ops = {
 
 int aq_pci_func_register_driver(void)
 {
-	return pci_register_driver(&aq_pci_ops);
+	return pci_register_driver(&aq_pci_driver);
 }
 
 void aq_pci_func_unregister_driver(void)
 {
-	pci_unregister_driver(&aq_pci_ops);
+	pci_unregister_driver(&aq_pci_driver);
 }
 

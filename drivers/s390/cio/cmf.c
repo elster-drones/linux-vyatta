@@ -167,7 +167,7 @@ static inline void cmf_activate(void *area, unsigned int onoff)
 	asm volatile(
 		"	lgr	1,%[r1]\n"
 		"	lgr	2,%[mbo]\n"
-		"	schm\n"
+		"	schm"
 		:
 		: [r1] "d" ((unsigned long)onoff),
 		  [mbo] "d" (virt_to_phys(area))
@@ -184,7 +184,7 @@ static int set_schib(struct ccw_device *cdev, u32 mme, int mbfc,
 	sch->config.mbfc = mbfc;
 	/* address can be either a block address or a block index */
 	if (mbfc)
-		sch->config.mba = address;
+		sch->config.mba = address ? virt_to_dma64((void *)address) : 0;
 	else
 		sch->config.mbi = address;
 

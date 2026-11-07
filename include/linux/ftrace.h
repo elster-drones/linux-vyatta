@@ -87,11 +87,13 @@ struct ftrace_hash;
 	defined(CONFIG_DYNAMIC_FTRACE)
 int
 ftrace_mod_address_lookup(unsigned long addr, unsigned long *size,
-		   unsigned long *off, char **modname, char *sym);
+			  unsigned long *off, char **modname,
+			  const unsigned char **modbuildid, char *sym);
 #else
 static inline int
 ftrace_mod_address_lookup(unsigned long addr, unsigned long *size,
-		   unsigned long *off, char **modname, char *sym)
+			  unsigned long *off, char **modname,
+			  const unsigned char **modbuildid, char *sym)
 {
 	return 0;
 }
@@ -193,6 +195,10 @@ static __always_inline struct pt_regs *ftrace_get_regs(struct ftrace_regs *fregs
 #if !defined(CONFIG_HAVE_DYNAMIC_FTRACE_WITH_ARGS) || \
 	defined(CONFIG_HAVE_FTRACE_REGS_HAVING_PT_REGS)
 
+#ifndef arch_ftrace_partial_regs
+#define arch_ftrace_partial_regs(regs) do {} while (0)
+#endif
+
 static __always_inline struct pt_regs *
 ftrace_partial_regs(struct ftrace_regs *fregs, struct pt_regs *regs)
 {
@@ -202,7 +208,11 @@ ftrace_partial_regs(struct ftrace_regs *fregs, struct pt_regs *regs)
 	 * Since arch_ftrace_get_regs() will check some members and may return
 	 * NULL, we can not use it.
 	 */
-	return &arch_ftrace_regs(fregs)->regs;
+	regs = &arch_ftrace_regs(fregs)->regs;
+
+	/* Allow arch specific updates to regs. */
+	arch_ftrace_partial_regs(regs);
+	return regs;
 }
 
 #endif /* !CONFIG_HAVE_DYNAMIC_FTRACE_WITH_ARGS || CONFIG_HAVE_FTRACE_REGS_HAVING_PT_REGS */
@@ -328,6 +338,7 @@ ftrace_func_t ftrace_ops_get_func(struct ftrace_ops *ops);
  * DIRECT - Used by the direct ftrace_ops helper for direct functions
  *            (internal ftrace only, should not be used by others)
  * SUBOP  - Is controlled by another op in field managed.
+ * GRAPH  - Is a component of the fgraph_ops structure
  */
 enum {
 	FTRACE_OPS_FL_ENABLED			= BIT(0),
@@ -349,6 +360,7 @@ enum {
 	FTRACE_OPS_FL_PERMANENT                 = BIT(16),
 	FTRACE_OPS_FL_DIRECT			= BIT(17),
 	FTRACE_OPS_FL_SUBOP			= BIT(18),
+	FTRACE_OPS_FL_GRAPH			= BIT(19),
 };
 
 #ifndef CONFIG_DYNAMIC_FTRACE_WITH_ARGS
@@ -569,8 +581,6 @@ static inline void arch_ftrace_set_direct_caller(struct ftrace_regs *fregs,
 
 #ifdef CONFIG_STACK_TRACER
 
-extern int stack_tracer_enabled;
-
 int stack_trace_sysctl(const struct ctl_table *table, int write, void *buffer,
 		       size_t *lenp, loff_t *ppos);
 
@@ -634,6 +644,8 @@ enum {
  */
 #define ftrace_get_symaddr(fentry_ip) (0)
 #endif
+
+void ftrace_sync_ipi(void *data);
 
 #ifdef CONFIG_DYNAMIC_FTRACE
 
@@ -785,8 +797,9 @@ unsigned long ftrace_get_addr_new(struct dyn_ftrace *rec);
 unsigned long ftrace_get_addr_curr(struct dyn_ftrace *rec);
 
 extern ftrace_func_t ftrace_trace_function;
+struct trace_array;
 
-int ftrace_regex_open(struct ftrace_ops *ops, int flag,
+int ftrace_regex_open(struct trace_array *tr, struct ftrace_ops *ops, int flag,
 		  struct inode *inode, struct file *file);
 ssize_t ftrace_filter_write(struct file *file, const char __user *ubuf,
 			    size_t cnt, loff_t *ppos);
@@ -996,7 +1009,7 @@ static inline unsigned long ftrace_location(unsigned long ip)
  * have them defined when ftrace is not enabled, but these
  * functions may still be called. Use a macro instead of inline.
  */
-#define ftrace_regex_open(ops, flag, inod, file) ({ -ENODEV; })
+#define ftrace_regex_open(tr, ops, flag, inode, file) ({ -ENODEV; })
 #define ftrace_set_early_filter(ops, buf, enable) do { } while (0)
 #define ftrace_set_filter_ip(ops, ip, remove, reset) ({ -ENODEV; })
 #define ftrace_set_filter_ips(ops, ips, cnt, remove, reset) ({ -ENODEV; })
@@ -1020,10 +1033,17 @@ static inline bool is_ftrace_trampoline(unsigned long addr)
 
 #ifdef CONFIG_FUNCTION_GRAPH_TRACER
 #ifndef ftrace_graph_func
-#define ftrace_graph_func ftrace_stub
-#define FTRACE_OPS_GRAPH_STUB FTRACE_OPS_FL_STUB
+# define ftrace_graph_func ftrace_stub
+# define FTRACE_OPS_GRAPH_STUB FTRACE_OPS_FL_STUB
+/*
+ * The function graph is called every time the function tracer is called.
+ * It must always test the ops hash and cannot just directly call
+ * the handler.
+ */
+# define FGRAPH_NO_DIRECT	1
 #else
-#define FTRACE_OPS_GRAPH_STUB 0
+# define FTRACE_OPS_GRAPH_STUB	0
+# define FGRAPH_NO_DIRECT	0
 #endif
 #endif /* CONFIG_FUNCTION_GRAPH_TRACER */
 
@@ -1106,7 +1126,7 @@ static __always_inline unsigned long get_lock_parent_ip(void)
 # define trace_preempt_off(a0, a1) do { } while (0)
 #endif
 
-#ifdef CONFIG_FTRACE_MCOUNT_RECORD
+#ifdef CONFIG_DYNAMIC_FTRACE
 extern void ftrace_init(void);
 #ifdef CC_USING_PATCHABLE_FUNCTION_ENTRY
 #define FTRACE_CALLSITE_SECTION	"__patchable_function_entries"
@@ -1298,16 +1318,9 @@ static inline void unpause_graph_tracing(void) { }
 #ifdef CONFIG_TRACING
 enum ftrace_dump_mode;
 
-#define MAX_TRACER_SIZE		100
-extern char ftrace_dump_on_oops[];
 extern int ftrace_dump_on_oops_enabled(void);
-extern int tracepoint_printk;
 
 extern void disable_trace_on_warning(void);
-extern int __disable_trace_on_warning;
-
-int tracepoint_printk_sysctl(const struct ctl_table *table, int write,
-			     void *buffer, size_t *lenp, loff_t *ppos);
 
 #else /* CONFIG_TRACING */
 static inline void  disable_trace_on_warning(void) { }

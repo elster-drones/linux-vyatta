@@ -37,6 +37,8 @@
 #include "namei.h"
 #include "sysfile.h"
 
+#define OCFS2_DIO_MARK_EXTENT_BATCH 200
+
 static int ocfs2_symlink_get_block(struct inode *inode, sector_t iblock,
 				   struct buffer_head *bh_result, int create)
 {
@@ -46,7 +48,6 @@ static int ocfs2_symlink_get_block(struct inode *inode, sector_t iblock,
 	struct buffer_head *bh = NULL;
 	struct buffer_head *buffer_cache_bh = NULL;
 	struct ocfs2_super *osb = OCFS2_SB(inode->i_sb);
-	void *kaddr;
 
 	trace_ocfs2_symlink_get_block(
 			(unsigned long long)OCFS2_I(inode)->ip_blkno,
@@ -91,17 +92,11 @@ static int ocfs2_symlink_get_block(struct inode *inode, sector_t iblock,
 		 * could've happened. Since we've got a reference on
 		 * the bh, even if it commits while we're doing the
 		 * copy, the data is still good. */
-		if (buffer_jbd(buffer_cache_bh)
-		    && ocfs2_inode_is_new(inode)) {
-			kaddr = kmap_atomic(bh_result->b_page);
-			if (!kaddr) {
-				mlog(ML_ERROR, "couldn't kmap!\n");
-				goto bail;
-			}
-			memcpy(kaddr + (bh_result->b_size * iblock),
-			       buffer_cache_bh->b_data,
-			       bh_result->b_size);
-			kunmap_atomic(kaddr);
+		if (buffer_jbd(buffer_cache_bh) && ocfs2_inode_is_new(inode)) {
+			memcpy_to_folio(bh_result->b_folio,
+					bh_result->b_size * iblock,
+					buffer_cache_bh->b_data,
+					bh_result->b_size);
 			set_buffer_uptodate(bh_result);
 		}
 		brelse(buffer_cache_bh);
@@ -920,7 +915,7 @@ static void ocfs2_write_failure(struct inode *inode,
 				ocfs2_jbd2_inode_add_write(wc->w_handle, inode,
 							   user_pos, user_len);
 
-			block_commit_write(&folio->page, from, to);
+			block_commit_write(folio, from, to);
 		}
 	}
 }
@@ -1078,6 +1073,7 @@ static int ocfs2_grab_folios_for_write(struct address_space *mapping,
 			if (IS_ERR(wc->w_folios[i])) {
 				ret = PTR_ERR(wc->w_folios[i]);
 				mlog_errno(ret);
+				wc->w_folios[i] = NULL;
 				goto out;
 			}
 		}
@@ -1863,7 +1859,8 @@ out:
 	return ret;
 }
 
-static int ocfs2_write_begin(struct file *file, struct address_space *mapping,
+static int ocfs2_write_begin(const struct kiocb *iocb,
+			     struct address_space *mapping,
 			     loff_t pos, unsigned len,
 			     struct folio **foliop, void **fsdata)
 {
@@ -2012,7 +2009,7 @@ int ocfs2_write_end_nolock(struct address_space *mapping, loff_t pos,
 				ocfs2_jbd2_inode_add_write(handle, inode,
 							   start_byte, length);
 			}
-			block_commit_write(&folio->page, from, to);
+			block_commit_write(folio, from, to);
 		}
 	}
 
@@ -2054,7 +2051,8 @@ out:
 	return copied;
 }
 
-static int ocfs2_write_end(struct file *file, struct address_space *mapping,
+static int ocfs2_write_end(const struct kiocb *iocb,
+			   struct address_space *mapping,
 			   loff_t pos, unsigned len, unsigned copied,
 			   struct folio *folio, void *fsdata)
 {
@@ -2282,7 +2280,7 @@ static int ocfs2_dio_end_io_write(struct inode *inode,
 	struct ocfs2_alloc_context *meta_ac = NULL;
 	handle_t *handle = NULL;
 	loff_t end = offset + bytes;
-	int ret = 0, credits = 0;
+	int ret = 0, credits = 0, batch = 0;
 
 	ocfs2_init_dealloc_ctxt(&dealloc);
 
@@ -2300,19 +2298,6 @@ static int ocfs2_dio_end_io_write(struct inode *inode,
 	}
 
 	down_write(&oi->ip_alloc_sem);
-
-	/* Delete orphan before acquire i_rwsem. */
-	if (dwc->dw_orphaned) {
-		BUG_ON(dwc->dw_writer_pid != task_pid_nr(current));
-
-		end = end > i_size_read(inode) ? end : 0;
-
-		ret = ocfs2_del_inode_from_orphan(osb, inode, di_bh,
-				!!end, end);
-		if (ret < 0)
-			mlog_errno(ret);
-	}
-
 	di = (struct ocfs2_dinode *)di_bh->b_data;
 
 	ocfs2_init_dinode_extent_tree(&et, INODE_CACHE(inode), di_bh);
@@ -2332,24 +2317,25 @@ static int ocfs2_dio_end_io_write(struct inode *inode,
 
 	credits = ocfs2_calc_extend_credits(inode->i_sb, &di->id2.i_list);
 
-	handle = ocfs2_start_trans(osb, credits);
-	if (IS_ERR(handle)) {
-		ret = PTR_ERR(handle);
-		mlog_errno(ret);
-		goto unlock;
-	}
-	ret = ocfs2_journal_access_di(handle, INODE_CACHE(inode), di_bh,
-				      OCFS2_JOURNAL_ACCESS_WRITE);
-	if (ret) {
-		mlog_errno(ret);
-		goto commit;
-	}
-
 	list_for_each_entry(ue, &dwc->dw_zero_list, ue_node) {
+		if (!handle) {
+			handle = ocfs2_start_trans(osb, credits);
+			if (IS_ERR(handle)) {
+				ret = PTR_ERR(handle);
+				mlog_errno(ret);
+				goto unlock;
+			}
+			ret = ocfs2_journal_access_di(handle, INODE_CACHE(inode), di_bh,
+					OCFS2_JOURNAL_ACCESS_WRITE);
+			if (ret) {
+				mlog_errno(ret);
+				goto commit;
+			}
+		}
 		ret = ocfs2_assure_trans_credits(handle, credits);
 		if (ret < 0) {
 			mlog_errno(ret);
-			break;
+			goto commit;
 		}
 		ret = ocfs2_mark_extent_written(inode, &et, handle,
 						ue->ue_cpos, 1,
@@ -2357,26 +2343,56 @@ static int ocfs2_dio_end_io_write(struct inode *inode,
 						meta_ac, &dealloc);
 		if (ret < 0) {
 			mlog_errno(ret);
-			break;
+			goto commit;
+		}
+
+		if (++batch == OCFS2_DIO_MARK_EXTENT_BATCH) {
+			ocfs2_commit_trans(osb, handle);
+			handle = NULL;
+			batch = 0;
 		}
 	}
 
 	if (end > i_size_read(inode)) {
+		if (!handle) {
+			handle = ocfs2_start_trans(osb, credits);
+			if (IS_ERR(handle)) {
+				ret = PTR_ERR(handle);
+				mlog_errno(ret);
+				goto unlock;
+			}
+		}
 		ret = ocfs2_set_inode_size(handle, inode, di_bh, end);
 		if (ret < 0)
 			mlog_errno(ret);
 	}
+
 commit:
-	ocfs2_commit_trans(osb, handle);
+	if (handle)
+		ocfs2_commit_trans(osb, handle);
 unlock:
 	up_write(&oi->ip_alloc_sem);
+
+	if (data_ac) {
+		ocfs2_free_alloc_context(data_ac);
+		data_ac = NULL;
+	}
+	if (meta_ac) {
+		ocfs2_free_alloc_context(meta_ac);
+		meta_ac = NULL;
+	}
+
+	/* everything looks good, let's start the cleanup */
+	if (!ret && dwc->dw_orphaned) {
+		BUG_ON(dwc->dw_writer_pid != task_pid_nr(current));
+
+		ret = ocfs2_del_inode_from_orphan(osb, inode, di_bh, 0, 0);
+		if (ret < 0)
+			mlog_errno(ret);
+	}
 	ocfs2_inode_unlock(inode, 1);
 	brelse(di_bh);
 out:
-	if (data_ac)
-		ocfs2_free_alloc_context(data_ac);
-	if (meta_ac)
-		ocfs2_free_alloc_context(meta_ac);
 	ocfs2_run_deallocs(osb, &dealloc);
 	ocfs2_dio_free_write_ctx(inode, dwc);
 

@@ -28,6 +28,8 @@
 #include "modpost.h"
 #include "../../include/linux/license.h"
 
+#define MODULE_NS_PREFIX "module:"
+
 static bool module_enabled;
 /* Are we using CONFIG_MODVERSIONS? */
 static bool modversions;
@@ -54,7 +56,7 @@ static bool allow_missing_ns_imports;
 
 static bool error_occurred;
 
-static bool extra_warn;
+static bool extra_warn __attribute__((unused));
 
 bool target_is_big_endian;
 bool host_is_big_endian;
@@ -96,6 +98,18 @@ static inline bool strends(const char *str, const char *postfix)
 		return false;
 
 	return strcmp(str + strlen(str) - strlen(postfix), postfix) == 0;
+}
+
+/**
+ * get_basename - return the last part of a pathname.
+ *
+ * @path: path to extract the filename from.
+ */
+const char *get_basename(const char *path)
+{
+	const char *tail = strrchr(path, '/');
+
+	return tail ? tail + 1 : path;
 }
 
 char *read_text_file(const char *filename)
@@ -588,6 +602,10 @@ static int ignore_undef_symbol(struct elf_info *info, const char *symname)
 		/* Special register function linked on all modules during final link of .ko */
 		if (strstarts(symname, "_restgpr0_") ||
 		    strstarts(symname, "_savegpr0_") ||
+		    strstarts(symname, "_restgpr1_") ||
+		    strstarts(symname, "_savegpr1_") ||
+		    strstarts(symname, "_restfpr_") ||
+		    strstarts(symname, "_savefpr_") ||
 		    strstarts(symname, "_restvr_") ||
 		    strstarts(symname, "_savevr_") ||
 		    strcmp(symname, ".TOC.") == 0)
@@ -1461,14 +1479,8 @@ static void extract_crcs_for_object(const char *object, struct module *mod)
 	const char *base;
 	int dirlen, ret;
 
-	base = strrchr(object, '/');
-	if (base) {
-		base++;
-		dirlen = base - object;
-	} else {
-		dirlen = 0;
-		base = object;
-	}
+	base = get_basename(object);
+	dirlen = base - object;
 
 	ret = snprintf(cmd_file, sizeof(cmd_file), "%.*s.%s.cmd",
 		       dirlen, object, base);
@@ -1558,13 +1570,13 @@ static void read_symbols(const char *modname)
 	struct elf_info info = { };
 	Elf_Sym *sym;
 
-	if (!parse_elf(&info, modname))
-		return;
-
 	if (!strends(modname, ".o")) {
 		error("%s: filename must be suffixed with .o\n", modname);
 		return;
 	}
+
+	if (!parse_elf(&info, modname))
+		return;
 
 	/* strip trailing .o */
 	mod = new_module(modname, strlen(modname) - strlen(".o"));
@@ -1589,14 +1601,17 @@ static void read_symbols(const char *modname)
 			license = get_next_modinfo(&info, "license", license);
 		}
 
-		namespace = get_modinfo(&info, "import_ns");
-		while (namespace) {
+		for (namespace = get_modinfo(&info, "import_ns");
+		     namespace;
+		     namespace = get_next_modinfo(&info, "import_ns", namespace)) {
+			if (strstarts(namespace, MODULE_NS_PREFIX))
+				error("%s: explicitly importing namespace \"%s\" is not allowed.\n",
+				      mod->name, namespace);
+
 			add_namespace(&mod->imported_namespaces, namespace);
-			namespace = get_next_modinfo(&info, "import_ns",
-						     namespace);
 		}
 
-		if (extra_warn && !get_modinfo(&info, "description"))
+		if (!get_modinfo(&info, "description"))
 			warn("missing MODULE_DESCRIPTION() in %s\n", modname);
 	}
 
@@ -1664,8 +1679,17 @@ void __attribute__((format(printf, 2, 3))) buf_printf(struct buffer *buf,
 
 	va_start(ap, fmt);
 	len = vsnprintf(tmp, SZ, fmt, ap);
-	buf_write(buf, tmp, len);
 	va_end(ap);
+
+	if (len < 0) {
+		perror("vsnprintf failed");
+		exit(1);
+	}
+	if (len >= SZ)
+		fatal("buf_printf output truncated for string %s: %d bytes needed, %d available\n",
+		      tmp, len + 1, SZ);
+
+	buf_write(buf, tmp, len);
 }
 
 void buf_write(struct buffer *buf, const char *s, int len)
@@ -1676,6 +1700,46 @@ void buf_write(struct buffer *buf, const char *s, int len)
 	}
 	strncpy(buf->p + buf->pos, s, len);
 	buf->pos += len;
+}
+
+/**
+ * verify_module_namespace() - does @modname have access to this symbol's @namespace
+ * @namespace: export symbol namespace
+ * @modname: module name
+ *
+ * If @namespace is prefixed with "module:" to indicate it is a module namespace
+ * then test if @modname matches any of the comma separated patterns.
+ *
+ * The patterns only support tail-glob.
+ */
+static bool verify_module_namespace(const char *namespace, const char *modname)
+{
+	size_t len, modlen = strlen(modname);
+	const char *prefix = "module:";
+	const char *sep;
+	bool glob;
+
+	if (!strstarts(namespace, prefix))
+		return false;
+
+	for (namespace += strlen(prefix); *namespace; namespace = sep) {
+		sep = strchrnul(namespace, ',');
+		len = sep - namespace;
+
+		glob = false;
+		if (sep[-1] == '*') {
+			len--;
+			glob = true;
+		}
+
+		if (*sep)
+			sep++;
+
+		if (strncmp(namespace, modname, len) == 0 && (glob || len == modlen))
+			return true;
+	}
+
+	return false;
 }
 
 static void check_exports(struct module *mod)
@@ -1703,13 +1767,10 @@ static void check_exports(struct module *mod)
 		s->crc_valid = exp->crc_valid;
 		s->crc = exp->crc;
 
-		basename = strrchr(mod->name, '/');
-		if (basename)
-			basename++;
-		else
-			basename = mod->name;
+		basename = get_basename(mod->name);
 
-		if (!contains_namespace(&mod->imported_namespaces, exp->namespace)) {
+		if (!verify_module_namespace(exp->namespace, basename) &&
+		    !contains_namespace(&mod->imported_namespaces, exp->namespace)) {
 			modpost_log(!allow_missing_ns_imports,
 				    "module %s uses symbol %s from namespace %s, but does not import it.\n",
 				    basename, exp->name, exp->namespace);
@@ -1765,11 +1826,8 @@ static void check_modname_len(struct module *mod)
 {
 	const char *mod_name;
 
-	mod_name = strrchr(mod->name, '/');
-	if (mod_name == NULL)
-		mod_name = mod->name;
-	else
-		mod_name++;
+	mod_name = get_basename(mod->name);
+
 	if (strlen(mod_name) >= MODULE_NAME_LEN)
 		error("module name is too long [%s.ko]\n", mod->name);
 }
@@ -1946,11 +2004,7 @@ static void add_depends(struct buffer *b, struct module *mod)
 			continue;
 
 		s->module->seen = true;
-		p = strrchr(s->module->name, '/');
-		if (p)
-			p++;
-		else
-			p = s->module->name;
+		p = get_basename(s->module->name);
 		buf_printf(b, "%s%s", first ? "" : ",", p);
 		first = 0;
 	}
@@ -2026,11 +2080,26 @@ static void write_if_changed(struct buffer *b, const char *fname)
 static void write_vmlinux_export_c_file(struct module *mod)
 {
 	struct buffer buf = { };
+	struct module_alias *alias, *next;
 
 	buf_printf(&buf,
 		   "#include <linux/export-internal.h>\n");
 
 	add_exported_symbols(&buf, mod);
+
+	buf_printf(&buf,
+		   "#include <linux/module.h>\n"
+		   "#undef __MODULE_INFO_PREFIX\n"
+		   "#define __MODULE_INFO_PREFIX\n");
+
+	list_for_each_entry_safe(alias, next, &mod->aliases, node) {
+		buf_printf(&buf, "MODULE_INFO(%s.alias, \"%s\");\n",
+			   alias->builtin_modname, alias->str);
+		list_del(&alias->node);
+		free(alias->builtin_modname);
+		free(alias);
+	}
+
 	write_if_changed(&buf, ".vmlinux.export.c");
 	free(buf.p);
 }

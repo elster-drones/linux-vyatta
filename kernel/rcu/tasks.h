@@ -316,7 +316,8 @@ static void call_rcu_tasks_generic_timer(struct timer_list *tlp)
 	unsigned long flags;
 	bool needwake = false;
 	struct rcu_tasks *rtp;
-	struct rcu_tasks_percpu *rtpcp = from_timer(rtpcp, tlp, lazy_timer);
+	struct rcu_tasks_percpu *rtpcp = timer_container_of(rtpcp, tlp,
+						            lazy_timer);
 
 	rtp = rtpcp->rtpp;
 	raw_spin_lock_irqsave_rcu_node(rtpcp, flags);
@@ -376,7 +377,8 @@ static void call_rcu_tasks_generic(struct rcu_head *rhp, rcu_callback_t func,
 	// Queuing callbacks before initialization not yet supported.
 	if (WARN_ON_ONCE(!rcu_segcblist_is_enabled(&rtpcp->cblist)))
 		rcu_segcblist_init(&rtpcp->cblist);
-	needwake = (func == wakeme_after_rcu) ||
+	needwake = (!havekthread && rcu_segcblist_empty(&rtpcp->cblist)) ||
+		   (func == wakeme_after_rcu) ||
 		   (rcu_segcblist_n_cbs(&rtpcp->cblist) == rcu_task_lazy_lim);
 	if (havekthread && !needwake && !timer_pending(&rtpcp->lazy_timer)) {
 		if (rtp->lazy_jiffies)
@@ -552,13 +554,13 @@ static void rcu_tasks_invoke_cbs(struct rcu_tasks *rtp, struct rcu_tasks_percpu 
 		rtpcp_next = rtp->rtpcp_array[index];
 		if (rtpcp_next->cpu < smp_load_acquire(&rtp->percpu_dequeue_lim)) {
 			cpuwq = rcu_cpu_beenfullyonline(rtpcp_next->cpu) ? rtpcp_next->cpu : WORK_CPU_UNBOUND;
-			queue_work_on(cpuwq, system_wq, &rtpcp_next->rtp_work);
+			queue_work_on(cpuwq, system_percpu_wq, &rtpcp_next->rtp_work);
 			index++;
 			if (index < num_possible_cpus()) {
 				rtpcp_next = rtp->rtpcp_array[index];
 				if (rtpcp_next->cpu < smp_load_acquire(&rtp->percpu_dequeue_lim)) {
 					cpuwq = rcu_cpu_beenfullyonline(rtpcp_next->cpu) ? rtpcp_next->cpu : WORK_CPU_UNBOUND;
-					queue_work_on(cpuwq, system_wq, &rtpcp_next->rtp_work);
+					queue_work_on(cpuwq, system_percpu_wq, &rtpcp_next->rtp_work);
 				}
 			}
 		}
@@ -1086,7 +1088,7 @@ static void rcu_tasks_postscan(struct list_head *hop)
 	}
 
 	if (!IS_ENABLED(CONFIG_TINY_RCU))
-		del_timer_sync(&tasks_rcu_exit_srcu_stall_timer);
+		timer_delete_sync(&tasks_rcu_exit_srcu_stall_timer);
 }
 
 /* See if tasks are still holding out, complain if so. */
@@ -2256,7 +2258,7 @@ void __init tasks_cblist_init_generic(void)
 #endif
 }
 
-void __init rcu_init_tasks_generic(void)
+static int __init rcu_init_tasks_generic(void)
 {
 #ifdef CONFIG_TASKS_RCU
 	rcu_spawn_tasks_kthread();
@@ -2272,7 +2274,10 @@ void __init rcu_init_tasks_generic(void)
 
 	// Run the self-tests.
 	rcu_tasks_initiate_self_tests();
+
+	return 0;
 }
+core_initcall(rcu_init_tasks_generic);
 
 #else /* #ifdef CONFIG_TASKS_RCU_GENERIC */
 static inline void rcu_tasks_bootup_oddness(void) {}

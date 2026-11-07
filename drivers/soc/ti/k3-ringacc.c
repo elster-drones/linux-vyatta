@@ -1012,7 +1012,7 @@ static int k3_ringacc_ring_pop_head_proxy(struct k3_ring *ring, void *elem)
 static int k3_ringacc_ring_pop_tail_proxy(struct k3_ring *ring, void *elem)
 {
 	return k3_ringacc_ring_access_proxy(ring, elem,
-					    K3_RINGACC_ACCESS_MODE_POP_HEAD);
+					    K3_RINGACC_ACCESS_MODE_POP_TAIL);
 }
 
 static int k3_ringacc_ring_access_io(struct k3_ring *ring, void *elem,
@@ -1083,7 +1083,7 @@ static int k3_ringacc_ring_pop_io(struct k3_ring *ring, void *elem)
 static int k3_ringacc_ring_pop_tail_io(struct k3_ring *ring, void *elem)
 {
 	return k3_ringacc_ring_access_io(ring, elem,
-					 K3_RINGACC_ACCESS_MODE_POP_HEAD);
+					 K3_RINGACC_ACCESS_MODE_POP_TAIL);
 }
 
 /*
@@ -1291,7 +1291,7 @@ struct k3_ringacc *of_k3_ringacc_get_by_phandle(struct device_node *np,
 
 	mutex_lock(&k3_ringacc_list_lock);
 	list_for_each_entry(entry, &k3_ringacc_list, list)
-		if (entry->dev->of_node == ringacc_np) {
+		if (device_match_of_node(entry->dev, ringacc_np)) {
 			ringacc = entry;
 			break;
 		}

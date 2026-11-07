@@ -3035,12 +3035,12 @@ void udc_remove(struct udc *dev)
 	stop_timer++;
 	if (timer_pending(&udc_timer))
 		wait_for_completion(&on_exit);
-	del_timer_sync(&udc_timer);
+	timer_delete_sync(&udc_timer);
 	/* remove pollstall timer */
 	stop_pollstall_timer++;
 	if (timer_pending(&udc_pollstall_timer))
 		wait_for_completion(&on_pollstall_exit);
-	del_timer_sync(&udc_pollstall_timer);
+	timer_delete_sync(&udc_pollstall_timer);
 	udc = NULL;
 }
 EXPORT_SYMBOL_GPL(udc_remove);
@@ -3133,7 +3133,6 @@ int udc_probe(struct udc *dev)
 	/* device struct setup */
 	dev->gadget.ops = &udc_ops;
 
-	dev_set_name(&dev->gadget.dev, "gadget");
 	dev->gadget.name = name;
 	dev->gadget.max_speed = USB_SPEED_HIGH;
 

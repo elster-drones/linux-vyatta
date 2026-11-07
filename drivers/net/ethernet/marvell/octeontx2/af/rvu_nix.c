@@ -315,7 +315,8 @@ static bool is_valid_txschq(struct rvu *rvu, int blkaddr,
 	if (lvl >= hw->cap.nix_tx_aggr_lvl) {
 		if ((nix_get_tx_link(rvu, map_func) !=
 		     nix_get_tx_link(rvu, pcifunc)) &&
-		     (rvu_get_pf(map_func) != rvu_get_pf(pcifunc)))
+		     (rvu_get_pf(rvu->pdev, map_func) !=
+				rvu_get_pf(rvu->pdev, pcifunc)))
 			return false;
 		else
 			return true;
@@ -339,7 +340,7 @@ static int nix_interface_init(struct rvu *rvu, u16 pcifunc, int type, int nixlf,
 	bool from_vf;
 	int err;
 
-	pf = rvu_get_pf(pcifunc);
+	pf = rvu_get_pf(rvu->pdev, pcifunc);
 	if (!is_pf_cgxmapped(rvu, pf) && type != NIX_INTF_TYPE_LBK &&
 	    type != NIX_INTF_TYPE_SDP)
 		return 0;
@@ -361,8 +362,8 @@ static int nix_interface_init(struct rvu *rvu, u16 pcifunc, int type, int nixlf,
 		pfvf->tx_chan_cnt = 1;
 		rsp->tx_link = cgx_id * hw->lmac_per_cgx + lmac_id;
 
-		cgx_set_pkind(rvu_cgx_pdata(cgx_id, rvu), lmac_id, pkind);
-		rvu_npc_set_pkind(rvu, pkind, pfvf);
+		if (rvu_cgx_check_permission_and_set_pkind(rvu, pcifunc, pkind))
+			rvu_npc_set_pkind(rvu, pkind, pfvf);
 		break;
 	case NIX_INTF_TYPE_LBK:
 		vf = (pcifunc & RVU_PFVF_FUNC_MASK) - 1;
@@ -416,7 +417,7 @@ static int nix_interface_init(struct rvu *rvu, u16 pcifunc, int type, int nixlf,
 		break;
 	case NIX_INTF_TYPE_SDP:
 		from_vf = !!(pcifunc & RVU_PFVF_FUNC_MASK);
-		parent_pf = &rvu->pf[rvu_get_pf(pcifunc)];
+		parent_pf = &rvu->pf[rvu_get_pf(rvu->pdev, pcifunc)];
 		sdp_info = parent_pf->sdp_info;
 		if (!sdp_info) {
 			dev_err(rvu->dev, "Invalid sdp_info pointer\n");
@@ -526,19 +527,24 @@ static int nix_setup_bpids(struct rvu *rvu, struct nix_hw *hw, int blkaddr)
 	bp->fn_map = devm_kcalloc(rvu->dev, bp->bpids.max,
 				  sizeof(u16), GFP_KERNEL);
 	if (!bp->fn_map)
-		return -ENOMEM;
+		goto free_bpids;
 
 	bp->intf_map = devm_kcalloc(rvu->dev, bp->bpids.max,
 				    sizeof(u8), GFP_KERNEL);
 	if (!bp->intf_map)
-		return -ENOMEM;
+		goto free_bpids;
 
 	bp->ref_cnt = devm_kcalloc(rvu->dev, bp->bpids.max,
 				   sizeof(u8), GFP_KERNEL);
 	if (!bp->ref_cnt)
-		return -ENOMEM;
+		goto free_bpids;
 
 	return 0;
+
+free_bpids:
+	rvu_free_bitmap(&bp->bpids);
+	bp->bpids.bmap = NULL;
+	return -ENOMEM;
 }
 
 void rvu_nix_flr_free_bpids(struct rvu *rvu, u16 pcifunc)
@@ -590,12 +596,12 @@ static int nix_bp_disable(struct rvu *rvu,
 	u16 chan_v;
 	u64 cfg;
 
-	pf = rvu_get_pf(pcifunc);
+	pf = rvu_get_pf(rvu->pdev, pcifunc);
 	type = is_lbk_vf(rvu, pcifunc) ? NIX_INTF_TYPE_LBK : NIX_INTF_TYPE_CGX;
 	if (!is_pf_cgxmapped(rvu, pf) && type != NIX_INTF_TYPE_LBK)
 		return 0;
 
-	if (is_sdp_pfvf(pcifunc))
+	if (is_sdp_pfvf(rvu, pcifunc))
 		type = NIX_INTF_TYPE_SDP;
 
 	if (cpt_link && !rvu->hw->cpt_links)
@@ -736,9 +742,9 @@ static int nix_bp_enable(struct rvu *rvu,
 	u16 chan_v;
 	u64 cfg;
 
-	pf = rvu_get_pf(pcifunc);
+	pf = rvu_get_pf(rvu->pdev, pcifunc);
 	type = is_lbk_vf(rvu, pcifunc) ? NIX_INTF_TYPE_LBK : NIX_INTF_TYPE_CGX;
-	if (is_sdp_pfvf(pcifunc))
+	if (is_sdp_pfvf(rvu, pcifunc))
 		type = NIX_INTF_TYPE_SDP;
 
 	/* Enable backpressure only for CGX mapped PFs and LBK/SDP interface */
@@ -1492,11 +1498,13 @@ int rvu_mbox_handler_nix_lf_alloc(struct rvu *rvu,
 				  struct nix_lf_alloc_req *req,
 				  struct nix_lf_alloc_rsp *rsp)
 {
-	int nixlf, qints, hwctx_size, intf, err, rc = 0;
+	int nixlf, qints, hwctx_size, intf, err, rc = 0, pf;
 	struct rvu_hwinfo *hw = rvu->hw;
 	u16 pcifunc = req->hdr.pcifunc;
+	u8 cgx_id = 0, lmac_id = 0;
 	struct rvu_block *block;
 	struct rvu_pfvf *pfvf;
+	struct cgx *cgxd;
 	u64 cfg, ctx_cfg;
 	int blkaddr;
 
@@ -1664,8 +1672,20 @@ int rvu_mbox_handler_nix_lf_alloc(struct rvu *rvu,
 	rvu_write64(rvu, blkaddr, NIX_AF_LFX_RX_CFG(nixlf), req->rx_cfg);
 
 	/* Configure pkind for TX parse config */
+
+	pf = rvu_get_pf(rvu->pdev, pcifunc);
 	cfg = NPC_TX_DEF_PKIND;
-	rvu_write64(rvu, blkaddr, NIX_AF_LFX_TX_PARSE_CFG(nixlf), cfg);
+
+	if (is_pf_cgxmapped(rvu, pf) && is_vf(pcifunc)) {
+		rvu_get_cgx_lmac_id(rvu->pf2cgxlmac_map[pf], &cgx_id, &lmac_id);
+		cgxd = rvu_cgx_pdata(cgx_id, rvu);
+		mutex_lock(&cgxd->lock);
+		if (rvu_cgx_is_pkind_config_permitted(rvu, pcifunc))
+			rvu_write64(rvu, blkaddr, NIX_AF_LFX_TX_PARSE_CFG(nixlf), cfg);
+		mutex_unlock(&cgxd->lock);
+	} else {
+		rvu_write64(rvu, blkaddr, NIX_AF_LFX_TX_PARSE_CFG(nixlf), cfg);
+	}
 
 	if (is_rep_dev(rvu, pcifunc)) {
 		pfvf->tx_chan_base = RVU_SWITCH_LBK_CHAN;
@@ -1674,7 +1694,7 @@ int rvu_mbox_handler_nix_lf_alloc(struct rvu *rvu,
 	}
 
 	intf = is_lbk_vf(rvu, pcifunc) ? NIX_INTF_TYPE_LBK : NIX_INTF_TYPE_CGX;
-	if (is_sdp_pfvf(pcifunc))
+	if (is_sdp_pfvf(rvu, pcifunc))
 		intf = NIX_INTF_TYPE_SDP;
 
 	err = nix_interface_init(rvu, pcifunc, intf, nixlf, rsp,
@@ -1798,7 +1818,8 @@ int rvu_mbox_handler_nix_mark_format_cfg(struct rvu *rvu,
 	rc = rvu_nix_reserve_mark_format(rvu, nix_hw, blkaddr, cfg);
 	if (rc < 0) {
 		dev_err(rvu->dev, "No mark_format_ctl for (pf:%d, vf:%d)",
-			rvu_get_pf(pcifunc), pcifunc & RVU_PFVF_FUNC_MASK);
+			rvu_get_pf(rvu->pdev,  pcifunc),
+				   pcifunc & RVU_PFVF_FUNC_MASK);
 		return NIX_AF_ERR_MARK_CFG_FAIL;
 	}
 
@@ -2050,7 +2071,7 @@ static void nix_clear_tx_xoff(struct rvu *rvu, int blkaddr,
 static int nix_get_tx_link(struct rvu *rvu, u16 pcifunc)
 {
 	struct rvu_hwinfo *hw = rvu->hw;
-	int pf = rvu_get_pf(pcifunc);
+	int pf = rvu_get_pf(rvu->pdev, pcifunc);
 	u8 cgx_id = 0, lmac_id = 0;
 
 	if (is_lbk_vf(rvu, pcifunc)) {/* LBK links */
@@ -2068,7 +2089,7 @@ static void nix_get_txschq_range(struct rvu *rvu, u16 pcifunc,
 				 int link, int *start, int *end)
 {
 	struct rvu_hwinfo *hw = rvu->hw;
-	int pf = rvu_get_pf(pcifunc);
+	int pf = rvu_get_pf(rvu->pdev, pcifunc);
 
 	/* LBK links */
 	if (is_lbk_vf(rvu, pcifunc) || is_rep_dev(rvu, pcifunc)) {
@@ -2426,11 +2447,11 @@ static int nix_smq_flush(struct rvu *rvu, int blkaddr,
 {
 	struct nix_smq_flush_ctx *smq_flush_ctx;
 	int err, restore_tx_en = 0, i;
-	int pf = rvu_get_pf(pcifunc);
+	int pf = rvu_get_pf(rvu->pdev, pcifunc);
 	u8 cgx_id = 0, lmac_id = 0;
 	u16 tl2_tl3_link_schq;
-	u8 link, link_level;
 	u64 cfg, bmap = 0;
+	u8 link_level;
 
 	if (!is_rvu_otx2(rvu)) {
 		/* Skip SMQ flush if pkt count is zero */
@@ -2462,7 +2483,6 @@ static int nix_smq_flush(struct rvu *rvu, int blkaddr,
 	link_level = rvu_read64(rvu, blkaddr, NIX_AF_PSE_CHANNEL_LEVEL) & 0x01 ?
 			NIX_TXSCH_LVL_TL3 : NIX_TXSCH_LVL_TL2;
 	tl2_tl3_link_schq = smq_flush_ctx->smq_tree_ctx[link_level].schq;
-	link = smq_flush_ctx->smq_tree_ctx[NIX_TXSCH_LVL_TL1].schq;
 
 	/* SMQ set enqueue xoff */
 	cfg = rvu_read64(rvu, blkaddr, NIX_AF_SMQX_CFG(smq));
@@ -2472,13 +2492,13 @@ static int nix_smq_flush(struct rvu *rvu, int blkaddr,
 	/* Clear all NIX_AF_TL3_TL2_LINK_CFG[ENA] for the TL3/TL2 queue */
 	for (i = 0; i < (rvu->hw->cgx_links + rvu->hw->lbk_links); i++) {
 		cfg = rvu_read64(rvu, blkaddr,
-				 NIX_AF_TL3_TL2X_LINKX_CFG(tl2_tl3_link_schq, link));
+				 NIX_AF_TL3_TL2X_LINKX_CFG(tl2_tl3_link_schq, i));
 		if (!(cfg & BIT_ULL(12)))
 			continue;
 		bmap |= BIT_ULL(i);
 		cfg &= ~BIT_ULL(12);
 		rvu_write64(rvu, blkaddr,
-			    NIX_AF_TL3_TL2X_LINKX_CFG(tl2_tl3_link_schq, link), cfg);
+			    NIX_AF_TL3_TL2X_LINKX_CFG(tl2_tl3_link_schq, i), cfg);
 	}
 
 	/* Do SMQ flush and set enqueue xoff */
@@ -2499,10 +2519,10 @@ static int nix_smq_flush(struct rvu *rvu, int blkaddr,
 		if (!(bmap & BIT_ULL(i)))
 			continue;
 		cfg = rvu_read64(rvu, blkaddr,
-				 NIX_AF_TL3_TL2X_LINKX_CFG(tl2_tl3_link_schq, link));
+				 NIX_AF_TL3_TL2X_LINKX_CFG(tl2_tl3_link_schq, i));
 		cfg |= BIT_ULL(12);
 		rvu_write64(rvu, blkaddr,
-			    NIX_AF_TL3_TL2X_LINKX_CFG(tl2_tl3_link_schq, link), cfg);
+			    NIX_AF_TL3_TL2X_LINKX_CFG(tl2_tl3_link_schq, i), cfg);
 	}
 
 	/* clear XOFF on TL2s */
@@ -2820,7 +2840,7 @@ void rvu_nix_tx_tl2_cfg(struct rvu *rvu, int blkaddr, u16 pcifunc,
 {
 	struct rvu_hwinfo *hw = rvu->hw;
 	int lbk_link_start, lbk_links;
-	u8 pf = rvu_get_pf(pcifunc);
+	u8 pf = rvu_get_pf(rvu->pdev, pcifunc);
 	int schq;
 	u64 cfg;
 
@@ -3190,7 +3210,8 @@ static int nix_blk_setup_mce(struct rvu *rvu, struct nix_hw *nix_hw,
 	err = rvu_nix_blk_aq_enq_inst(rvu, nix_hw, &aq_req, NULL);
 	if (err) {
 		dev_err(rvu->dev, "Failed to setup Bcast MCE for PF%d:VF%d\n",
-			rvu_get_pf(pcifunc), pcifunc & RVU_PFVF_FUNC_MASK);
+			rvu_get_pf(rvu->pdev, pcifunc),
+				pcifunc & RVU_PFVF_FUNC_MASK);
 		return err;
 	}
 	return 0;
@@ -3458,7 +3479,7 @@ int nix_update_mce_list(struct rvu *rvu, u16 pcifunc,
 		dev_err(rvu->dev,
 			"%s: Idx %d > max MCE idx %d, for PF%d bcast list\n",
 			__func__, idx, mce_list->max,
-			pcifunc >> RVU_PFVF_PF_SHIFT);
+			rvu_get_pf(rvu->pdev, pcifunc));
 		return -EINVAL;
 	}
 
@@ -3510,7 +3531,8 @@ void nix_get_mce_list(struct rvu *rvu, u16 pcifunc, int type,
 	struct rvu_pfvf *pfvf;
 
 	if (!hw->cap.nix_rx_multicast ||
-	    !is_pf_cgxmapped(rvu, rvu_get_pf(pcifunc & ~RVU_PFVF_FUNC_MASK))) {
+	    !is_pf_cgxmapped(rvu, rvu_get_pf(rvu->pdev,
+			     pcifunc & ~RVU_PFVF_FUNC_MASK))) {
 		*mce_list = NULL;
 		*mce_idx = 0;
 		return;
@@ -3544,13 +3566,13 @@ static int nix_update_mce_rule(struct rvu *rvu, u16 pcifunc,
 	int pf;
 
 	/* skip multicast pkt replication for AF's VFs & SDP links */
-	if (is_lbk_vf(rvu, pcifunc) || is_sdp_pfvf(pcifunc))
+	if (is_lbk_vf(rvu, pcifunc) || is_sdp_pfvf(rvu, pcifunc))
 		return 0;
 
 	if (!hw->cap.nix_rx_multicast)
 		return 0;
 
-	pf = rvu_get_pf(pcifunc);
+	pf = rvu_get_pf(rvu->pdev, pcifunc);
 	if (!is_pf_cgxmapped(rvu, pf))
 		return 0;
 
@@ -3619,7 +3641,7 @@ static int nix_setup_mce_tables(struct rvu *rvu, struct nix_hw *nix_hw)
 
 		for (idx = 0; idx < (numvfs + 1); idx++) {
 			/* idx-0 is for PF, followed by VFs */
-			pcifunc = (pf << RVU_PFVF_PF_SHIFT);
+			pcifunc = rvu_make_pcifunc(rvu->pdev, pf, 0);
 			pcifunc |= idx;
 			/* Add dummy entries now, so that we don't have to check
 			 * for whether AQ_OP should be INIT/WRITE later on.
@@ -4535,7 +4557,7 @@ int rvu_mbox_handler_nix_set_rx_mode(struct rvu *rvu, struct nix_rx_mode *req,
 		rvu_npc_install_allmulti_entry(rvu, pcifunc, nixlf,
 					       pfvf->rx_chan_base);
 	} else {
-		if (!nix_rx_multicast)
+		if (!nix_rx_multicast && !is_vf(pcifunc))
 			rvu_npc_enable_allmulti_entry(rvu, pcifunc, nixlf, false);
 	}
 
@@ -4545,7 +4567,7 @@ int rvu_mbox_handler_nix_set_rx_mode(struct rvu *rvu, struct nix_rx_mode *req,
 					      pfvf->rx_chan_base,
 					      pfvf->rx_chan_cnt);
 	else
-		if (!nix_rx_multicast)
+		if (!nix_rx_multicast && !is_vf(pcifunc))
 			rvu_npc_enable_promisc_entry(rvu, pcifunc, nixlf, false);
 
 	return 0;
@@ -4554,7 +4576,7 @@ int rvu_mbox_handler_nix_set_rx_mode(struct rvu *rvu, struct nix_rx_mode *req,
 static void nix_find_link_frs(struct rvu *rvu,
 			      struct nix_frs_cfg *req, u16 pcifunc)
 {
-	int pf = rvu_get_pf(pcifunc);
+	int pf = rvu_get_pf(rvu->pdev, pcifunc);
 	struct rvu_pfvf *pfvf;
 	int maxlen, minlen;
 	int numvfs, hwvf;
@@ -4601,7 +4623,7 @@ int rvu_mbox_handler_nix_set_hw_frs(struct rvu *rvu, struct nix_frs_cfg *req,
 {
 	struct rvu_hwinfo *hw = rvu->hw;
 	u16 pcifunc = req->hdr.pcifunc;
-	int pf = rvu_get_pf(pcifunc);
+	int pf = rvu_get_pf(rvu->pdev, pcifunc);
 	int blkaddr, link = -1;
 	struct nix_hw *nix_hw;
 	struct rvu_pfvf *pfvf;
@@ -4928,12 +4950,18 @@ static int rvu_nix_block_init(struct rvu *rvu, struct nix_hw *nix_hw)
 	/* Set chan/link to backpressure TL3 instead of TL2 */
 	rvu_write64(rvu, blkaddr, NIX_AF_PSE_CHANNEL_LEVEL, 0x01);
 
-	/* Disable SQ manager's sticky mode operation (set TM6 = 0)
+	/* Disable SQ manager's sticky mode operation (set TM6 = 0, TM11 = 0)
 	 * This sticky mode is known to cause SQ stalls when multiple
-	 * SQs are mapped to same SMQ and transmitting pkts at a time.
+	 * SQs are mapped to same SMQ and transmitting pkts simultaneously.
+	 * NIX PSE may deadlock when there are any sticky to non-sticky
+	 * transmission. Hence disable it (TM5 = 0).
 	 */
 	cfg = rvu_read64(rvu, blkaddr, NIX_AF_SQM_DBG_CTL_STATUS);
-	cfg &= ~BIT_ULL(15);
+	cfg &= ~(BIT_ULL(15) | BIT_ULL(14) | BIT_ULL(23));
+	/* NIX may drop credits when condition clocks are turned off.
+	 * Hence enable control flow clk (set TM9 = 1).
+	 */
+	cfg |= BIT_ULL(21);
 	rvu_write64(rvu, blkaddr, NIX_AF_SQM_DBG_CTL_STATUS, cfg);
 
 	ltdefs = rvu->kpu.lt_def;
@@ -5046,7 +5074,7 @@ static int rvu_nix_block_init(struct rvu *rvu, struct nix_hw *nix_hw)
 				    (ltdefs->rx_apad1.ltype_match << 4) |
 				    ltdefs->rx_apad1.ltype_mask);
 
-			/* Receive ethertype defination register defines layer
+			/* Receive ethertype definition register defines layer
 			 * information in NPC_RESULT_S to identify the Ethertype
 			 * location in L2 header. Used for Ethertype overwriting
 			 * in inline IPsec flow.
@@ -5251,7 +5279,7 @@ int rvu_mbox_handler_nix_lf_start_rx(struct rvu *rvu, struct msg_req *req,
 
 	rvu_switch_update_rules(rvu, pcifunc, true);
 
-	pf = rvu_get_pf(pcifunc);
+	pf = rvu_get_pf(rvu->pdev, pcifunc);
 	if (is_pf_cgxmapped(rvu, pf) && rvu->rep_mode)
 		rvu_rep_notify_pfvf_state(rvu, pcifunc, true);
 
@@ -5284,7 +5312,7 @@ int rvu_mbox_handler_nix_lf_stop_rx(struct rvu *rvu, struct msg_req *req,
 	rvu_switch_update_rules(rvu, pcifunc, false);
 	rvu_cgx_tx_enable(rvu, pcifunc, true);
 
-	pf = rvu_get_pf(pcifunc);
+	pf = rvu_get_pf(rvu->pdev, pcifunc);
 	if (is_pf_cgxmapped(rvu, pf) && rvu->rep_mode)
 		rvu_rep_notify_pfvf_state(rvu, pcifunc, false);
 	return 0;
@@ -5296,7 +5324,7 @@ void rvu_nix_lf_teardown(struct rvu *rvu, u16 pcifunc, int blkaddr, int nixlf)
 {
 	struct rvu_pfvf *pfvf = rvu_get_pfvf(rvu, pcifunc);
 	struct hwctx_disable_req ctx_req;
-	int pf = rvu_get_pf(pcifunc);
+	int pf = rvu_get_pf(rvu->pdev, pcifunc);
 	struct mac_ops *mac_ops;
 	u8 cgx_id, lmac_id;
 	u64 sa_base;
@@ -5385,7 +5413,7 @@ static int rvu_nix_lf_ptp_tx_cfg(struct rvu *rvu, u16 pcifunc, bool enable)
 	int nixlf;
 	u64 cfg;
 
-	pf = rvu_get_pf(pcifunc);
+	pf = rvu_get_pf(rvu->pdev, pcifunc);
 	if (!is_mac_feature_supported(rvu, pf, RVU_LMAC_FEAT_PTP))
 		return 0;
 
@@ -6611,4 +6639,20 @@ unlock_grp:
 		mutex_unlock(&mcast_grp->mcast_grp_lock);
 
 	return ret;
+}
+
+/* On CN10k and older series of silicons, hardware may incorrectly
+ * assert XOFF on certain channels. Issue a write on NIX_AF_RX_CHANX_CFG
+ * to broadcacst XON on the same.
+ */
+void rvu_block_bcast_xon(struct rvu *rvu, int blkaddr)
+{
+	struct rvu_block *block = &rvu->hw->block[blkaddr];
+	u64 cfg;
+
+	if (!block->implemented || is_cn20k(rvu->pdev))
+		return;
+
+	cfg = rvu_read64(rvu, blkaddr, NIX_AF_RX_CHANX_CFG(0));
+	rvu_write64(rvu, blkaddr, NIX_AF_RX_CHANX_CFG(0), cfg);
 }

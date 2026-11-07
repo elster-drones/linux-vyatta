@@ -59,17 +59,10 @@ static int exynos_drm_fbdev_update(struct drm_fb_helper *helper,
 				   struct drm_fb_helper_surface_size *sizes,
 				   struct exynos_drm_gem *exynos_gem)
 {
-	struct fb_info *fbi;
+	struct fb_info *fbi = helper->info;
 	struct drm_framebuffer *fb = helper->fb;
 	unsigned int size = fb->width * fb->height * fb->format->cpp[0];
 	unsigned long offset;
-
-	fbi = drm_fb_helper_alloc_info(helper);
-	if (IS_ERR(fbi)) {
-		DRM_DEV_ERROR(to_dma_dev(helper->dev),
-			      "failed to allocate fb info.\n");
-		return PTR_ERR(fbi);
-	}
 
 	fbi->fbops = &exynos_drm_fb_ops;
 
@@ -116,7 +109,10 @@ int exynos_drm_fbdev_driver_fbdev_probe(struct drm_fb_helper *helper,
 		return PTR_ERR(exynos_gem);
 
 	helper->fb =
-		exynos_drm_framebuffer_init(dev, &mode_cmd, &exynos_gem, 1);
+		exynos_drm_framebuffer_init(dev,
+					    drm_get_format_info(dev, mode_cmd.pixel_format,
+								mode_cmd.modifier[0]),
+					    &mode_cmd, &exynos_gem, 1);
 	if (IS_ERR(helper->fb)) {
 		DRM_DEV_ERROR(dev->dev, "failed to create drm framebuffer.\n");
 		ret = PTR_ERR(helper->fb);

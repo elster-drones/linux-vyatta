@@ -4,7 +4,7 @@
 
 #include <asm/page_64_types.h>
 
-#ifndef __ASSEMBLY__
+#ifndef __ASSEMBLER__
 #include <asm/cpufeatures.h>
 #include <asm/alternative.h>
 
@@ -43,6 +43,9 @@ extern unsigned long __phys_addr_symbol(unsigned long);
 void clear_page_orig(void *page);
 void clear_page_rep(void *page);
 void clear_page_erms(void *page);
+KCFI_REFERENCE(clear_page_orig);
+KCFI_REFERENCE(clear_page_rep);
+KCFI_REFERENCE(clear_page_erms);
 
 static inline void clear_page(void *page)
 {
@@ -55,13 +58,13 @@ static inline void clear_page(void *page)
 			   clear_page_rep, X86_FEATURE_REP_GOOD,
 			   clear_page_erms, X86_FEATURE_ERMS,
 			   "=D" (page),
-			   "D" (page)
-			   : "cc", "memory", "rax", "rcx");
+			   "D" (page),
+			   "cc", "memory", "rax", "rcx");
 }
 
 void copy_page(void *to, void *from);
+KCFI_REFERENCE(copy_page);
 
-#ifdef CONFIG_X86_5LEVEL
 /*
  * User space process size.  This is the first address outside the user range.
  * There are a few constraints that determine this:
@@ -92,9 +95,8 @@ static __always_inline unsigned long task_size_max(void)
 
 	return ret;
 }
-#endif	/* CONFIG_X86_5LEVEL */
 
-#endif	/* !__ASSEMBLY__ */
+#endif	/* !__ASSEMBLER__ */
 
 #ifdef CONFIG_X86_VSYSCALL_EMULATION
 # define __HAVE_ARCH_GATE_AREA 1

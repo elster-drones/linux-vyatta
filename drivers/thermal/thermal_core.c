@@ -41,6 +41,8 @@ static struct thermal_governor *def_governor;
 
 static bool thermal_pm_suspended;
 
+static struct workqueue_struct *thermal_wq __ro_after_init;
+
 /*
  * Governor section: set of functions to handle thermal governors
  *
@@ -313,7 +315,7 @@ static void thermal_zone_device_set_polling(struct thermal_zone_device *tz,
 	if (delay > HZ)
 		delay = round_jiffies_relative(delay);
 
-	mod_delayed_work(system_freezable_power_efficient_wq, &tz->poll_queue, delay);
+	mod_delayed_work(thermal_wq, &tz->poll_queue, delay);
 }
 
 static void thermal_zone_recheck(struct thermal_zone_device *tz, int error)
@@ -369,7 +371,8 @@ void thermal_governor_update_tz(struct thermal_zone_device *tz,
 	tz->governor->update_tz(tz, reason);
 }
 
-static void thermal_zone_device_halt(struct thermal_zone_device *tz, bool shutdown)
+static void thermal_zone_device_halt(struct thermal_zone_device *tz,
+				     enum hw_protection_action action)
 {
 	/*
 	 * poweroff_delay_ms must be a carefully profiled positive value.
@@ -380,21 +383,23 @@ static void thermal_zone_device_halt(struct thermal_zone_device *tz, bool shutdo
 
 	dev_emerg(&tz->device, "%s: critical temperature reached\n", tz->type);
 
-	if (shutdown)
-		hw_protection_shutdown(msg, poweroff_delay_ms);
-	else
-		hw_protection_reboot(msg, poweroff_delay_ms);
+	__hw_protection_trigger(msg, poweroff_delay_ms, action);
 }
 
 void thermal_zone_device_critical(struct thermal_zone_device *tz)
 {
-	thermal_zone_device_halt(tz, true);
+	thermal_zone_device_halt(tz, HWPROT_ACT_DEFAULT);
 }
 EXPORT_SYMBOL(thermal_zone_device_critical);
 
+void thermal_zone_device_critical_shutdown(struct thermal_zone_device *tz)
+{
+	thermal_zone_device_halt(tz, HWPROT_ACT_SHUTDOWN);
+}
+
 void thermal_zone_device_critical_reboot(struct thermal_zone_device *tz)
 {
-	thermal_zone_device_halt(tz, false);
+	thermal_zone_device_halt(tz, HWPROT_ACT_REBOOT);
 }
 
 static void handle_critical_trips(struct thermal_zone_device *tz,
@@ -959,6 +964,8 @@ static void thermal_release(struct device *dev)
 		     sizeof("thermal_zone") - 1)) {
 		tz = to_thermal_zone(dev);
 		thermal_zone_destroy_device_groups(tz);
+		thermal_set_governor(tz, NULL);
+		ida_destroy(&tz->ida);
 		mutex_destroy(&tz->lock);
 		complete(&tz->removal);
 	} else if (!strncmp(dev_name(dev), "cooling_device",
@@ -1589,25 +1596,27 @@ thermal_zone_device_register_with_trips(const char *type,
 
 	tz->state = TZ_STATE_FLAG_INIT;
 
-	/* sys I/F */
-	/* Add nodes that are always present via .groups */
-	result = thermal_zone_create_device_groups(tz);
+	result = dev_set_name(&tz->device, "thermal_zone%d", tz->id);
 	if (result)
 		goto remove_id;
 
-	result = dev_set_name(&tz->device, "thermal_zone%d", tz->id);
-	if (result) {
-		thermal_zone_destroy_device_groups(tz);
-		goto remove_id;
-	}
 	thermal_zone_device_init(tz);
-	result = device_register(&tz->device);
-	if (result)
-		goto release_device;
 
 	result = thermal_zone_init_governor(tz);
 	if (result)
-		goto unregister;
+		goto remove_id;
+
+	/* sys I/F */
+	/* Add nodes that are always present via .groups */
+	result = thermal_zone_create_device_groups(tz);
+	if (result) {
+		thermal_set_governor(tz, NULL);
+		goto remove_id;
+	}
+
+	result = device_register(&tz->device);
+	if (result)
+		goto release_device;
 
 	if (!tz->tzp || !tz->tzp->no_hwmon) {
 		result = thermal_add_hwmon_sysfs(tz);
@@ -1633,6 +1642,7 @@ unregister:
 	device_del(&tz->device);
 release_device:
 	put_device(&tz->device);
+	wait_for_completion(&tz->removal);
 remove_id:
 	ida_free(&thermal_tz_ida, id);
 free_tzp:
@@ -1715,12 +1725,8 @@ void thermal_zone_device_unregister(struct thermal_zone_device *tz)
 
 	cancel_delayed_work_sync(&tz->poll_queue);
 
-	thermal_set_governor(tz, NULL);
-
 	thermal_thresholds_exit(tz);
 	thermal_remove_hwmon_sysfs(tz);
-	ida_free(&thermal_tz_ida, tz->id);
-	ida_destroy(&tz->ida);
 
 	device_del(&tz->device);
 	put_device(&tz->device);
@@ -1728,6 +1734,9 @@ void thermal_zone_device_unregister(struct thermal_zone_device *tz)
 	thermal_notify_tz_delete(tz);
 
 	wait_for_completion(&tz->removal);
+
+	ida_free(&thermal_tz_ida, tz->id);
+
 	kfree(tz->tzp);
 	kfree(tz);
 }
@@ -1778,6 +1787,10 @@ static void thermal_zone_device_resume(struct work_struct *work)
 
 	guard(thermal_zone)(tz);
 
+	/* If the thermal zone is going away, there's nothing to do. */
+	if (tz->state & TZ_STATE_FLAG_EXIT)
+		return;
+
 	tz->state &= ~(TZ_STATE_FLAG_SUSPENDED | TZ_STATE_FLAG_RESUMING);
 
 	thermal_debug_tz_resume(tz);
@@ -1804,6 +1817,9 @@ static void thermal_zone_pm_prepare(struct thermal_zone_device *tz)
 	}
 
 	tz->state |= TZ_STATE_FLAG_SUSPENDED;
+
+	/* Prevent new work from getting to the workqueue subsequently. */
+	cancel_delayed_work(&tz->poll_queue);
 }
 
 static void thermal_pm_notify_prepare(void)
@@ -1822,8 +1838,6 @@ static void thermal_zone_pm_complete(struct thermal_zone_device *tz)
 {
 	guard(thermal_zone)(tz);
 
-	cancel_delayed_work(&tz->poll_queue);
-
 	reinit_completion(&tz->resume);
 	tz->state |= TZ_STATE_FLAG_RESUMING;
 
@@ -1833,7 +1847,7 @@ static void thermal_zone_pm_complete(struct thermal_zone_device *tz)
 	 */
 	INIT_DELAYED_WORK(&tz->poll_queue, thermal_zone_device_resume);
 	/* Queue up the work without a delay. */
-	mod_delayed_work(system_freezable_power_efficient_wq, &tz->poll_queue, 0);
+	mod_delayed_work(thermal_wq, &tz->poll_queue, 0);
 }
 
 static void thermal_pm_notify_complete(void)
@@ -1856,6 +1870,11 @@ static int thermal_pm_notify(struct notifier_block *nb,
 	case PM_RESTORE_PREPARE:
 	case PM_SUSPEND_PREPARE:
 		thermal_pm_notify_prepare();
+		/*
+		 * Allow any leftover thermal work items already on the
+		 * worqueue to complete so they don't get in the way later.
+		 */
+		flush_workqueue(thermal_wq);
 		break;
 	case PM_POST_HIBERNATION:
 	case PM_POST_RESTORE:
@@ -1888,9 +1907,16 @@ static int __init thermal_init(void)
 	if (result)
 		goto error;
 
+	thermal_wq = alloc_workqueue("thermal_events",
+				      WQ_FREEZABLE | WQ_POWER_EFFICIENT | WQ_PERCPU, 0);
+	if (!thermal_wq) {
+		result = -ENOMEM;
+		goto unregister_netlink;
+	}
+
 	result = thermal_register_governors();
 	if (result)
-		goto unregister_netlink;
+		goto destroy_workqueue;
 
 	thermal_class = kzalloc(sizeof(*thermal_class), GFP_KERNEL);
 	if (!thermal_class) {
@@ -1917,6 +1943,8 @@ static int __init thermal_init(void)
 
 unregister_governors:
 	thermal_unregister_governors();
+destroy_workqueue:
+	destroy_workqueue(thermal_wq);
 unregister_netlink:
 	thermal_netlink_exit();
 error:

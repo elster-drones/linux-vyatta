@@ -25,8 +25,6 @@ struct ip_tunnel_info;
 
 #define SIN6_LEN_RFC2133	24
 
-#define IPV6_MAXPLEN		65535
-
 /*
  *	NextHeader field of IPv6 header
  */
@@ -91,6 +89,9 @@ struct ip_tunnel_info;
 #define IP6_DEFAULT_MAX_HBH_OPTS_CNT	 8
 #define IP6_DEFAULT_MAX_DST_OPTS_LEN	 INT_MAX /* No limit */
 #define IP6_DEFAULT_MAX_HBH_OPTS_LEN	 INT_MAX /* No limit */
+
+/* Hard limit on traversed IPv6 extension headers */
+#define IP6_MAX_EXT_HDRS_CNT		 12
 
 /*
  *	Addr type
@@ -246,17 +247,20 @@ extern int sysctl_mld_qrv;
 #define _DEVADD(net, statname, mod, idev, field, val)			\
 ({									\
 	struct inet6_dev *_idev = (idev);				\
+	unsigned long _field = (field);					\
+	unsigned long _val = (val);					\
 	if (likely(_idev != NULL))					\
-		mod##SNMP_ADD_STATS((_idev)->stats.statname, (field), (val)); \
-	mod##SNMP_ADD_STATS((net)->mib.statname##_statistics, (field), (val));\
+		mod##SNMP_ADD_STATS((_idev)->stats.statname, _field,  _val); \
+	mod##SNMP_ADD_STATS((net)->mib.statname##_statistics, _field, _val);\
 })
 
 #define _DEVUPD(net, statname, mod, idev, field, val)			\
 ({									\
 	struct inet6_dev *_idev = (idev);				\
+	unsigned long _val = (val);					\
 	if (likely(_idev != NULL))					\
-		mod##SNMP_UPD_PO_STATS((_idev)->stats.statname, field, (val)); \
-	mod##SNMP_UPD_PO_STATS((net)->mib.statname##_statistics, field, (val));\
+		mod##SNMP_UPD_PO_STATS((_idev)->stats.statname, field, _val); \
+	mod##SNMP_UPD_PO_STATS((net)->mib.statname##_statistics, field, _val);\
 })
 
 /* MIBs */
@@ -363,15 +367,6 @@ struct ipcm6_cookie {
 	struct ipv6_txoptions *opt;
 };
 
-static inline void ipcm6_init(struct ipcm6_cookie *ipc6)
-{
-	*ipc6 = (struct ipcm6_cookie) {
-		.hlimit = -1,
-		.tclass = -1,
-		.dontfrag = -1,
-	};
-}
-
 static inline void ipcm6_init_sk(struct ipcm6_cookie *ipc6,
 				 const struct sock *sk)
 {
@@ -380,6 +375,8 @@ static inline void ipcm6_init_sk(struct ipcm6_cookie *ipc6,
 		.tclass = inet6_sk(sk)->tclass,
 		.dontfrag = inet6_test_bit(DONTFRAG, sk),
 	};
+
+	sockcm_init(&ipc6->sockc, sk);
 }
 
 static inline struct ipv6_txoptions *txopt_get(const struct ipv6_pinfo *np)
@@ -1014,11 +1011,11 @@ static inline int ip6_default_np_autolabel(struct net *net)
 #if IS_ENABLED(CONFIG_IPV6)
 static inline int ip6_multipath_hash_policy(const struct net *net)
 {
-	return net->ipv6.sysctl.multipath_hash_policy;
+	return READ_ONCE(net->ipv6.sysctl.multipath_hash_policy);
 }
 static inline u32 ip6_multipath_hash_fields(const struct net *net)
 {
-	return net->ipv6.sysctl.multipath_hash_fields;
+	return READ_ONCE(net->ipv6.sysctl.multipath_hash_fields);
 }
 #else
 static inline int ip6_multipath_hash_policy(const struct net *net)
@@ -1151,11 +1148,11 @@ int ip6_local_out(struct net *net, struct sock *sk, struct sk_buff *skb);
  *	Extension header (options) processing
  */
 
-void ipv6_push_nfrag_opts(struct sk_buff *skb, struct ipv6_txoptions *opt,
-			  u8 *proto, struct in6_addr **daddr_p,
-			  struct in6_addr *saddr);
-void ipv6_push_frag_opts(struct sk_buff *skb, struct ipv6_txoptions *opt,
-			 u8 *proto);
+u8 ipv6_push_nfrag_opts(struct sk_buff *skb, struct ipv6_txoptions *opt,
+			u8 proto, struct in6_addr **daddr_p,
+			struct in6_addr *saddr);
+u8 ipv6_push_frag_opts(struct sk_buff *skb, struct ipv6_txoptions *opt,
+		       u8 proto);
 
 int ipv6_skip_exthdr(const struct sk_buff *, int start, u8 *nexthdrp,
 		     __be16 *frag_offp);
@@ -1200,10 +1197,8 @@ int ip6_datagram_connect_v6_only(struct sock *sk, struct sockaddr *addr,
 int ip6_datagram_dst_update(struct sock *sk, bool fix_sk_saddr);
 void ip6_datagram_release_cb(struct sock *sk);
 
-int ipv6_recv_error(struct sock *sk, struct msghdr *msg, int len,
-		    int *addr_len);
-int ipv6_recv_rxpmtu(struct sock *sk, struct msghdr *msg, int len,
-		     int *addr_len);
+int ipv6_recv_error(struct sock *sk, struct msghdr *msg, int len);
+int ipv6_recv_rxpmtu(struct sock *sk, struct msghdr *msg, int len);
 void ipv6_icmp_error(struct sock *sk, struct sk_buff *skb, int err, __be16 port,
 		     u32 info, u8 *payload);
 void ipv6_local_error(struct sock *sk, int err, struct flowi6 *fl6, u32 info);
@@ -1284,12 +1279,15 @@ int ipv6_sock_mc_drop(struct sock *sk, int ifindex,
 
 static inline int ip6_sock_set_v6only(struct sock *sk)
 {
-	if (inet_sk(sk)->inet_num)
-		return -EINVAL;
+	int ret = 0;
+
 	lock_sock(sk);
-	sk->sk_ipv6only = true;
+	if (inet_sk(sk)->inet_num)
+		ret = -EINVAL;
+	else
+		sk->sk_ipv6only = true;
 	release_sock(sk);
-	return 0;
+	return ret;
 }
 
 static inline void ip6_sock_set_recverr(struct sock *sk)

@@ -201,7 +201,7 @@ static int max17042_get_battery_health(struct max17042_chip *chip, int *health)
 		goto out;
 	}
 
-	if (vbatt > chip->pdata->vmax + MAX17042_VMAX_TOLERANCE) {
+	if (vbatt > size_add(chip->pdata->vmax, MAX17042_VMAX_TOLERANCE)) {
 		*health = POWER_SUPPLY_HEALTH_OVERVOLTAGE;
 		goto out;
 	}
@@ -1066,7 +1066,7 @@ static int max17042_probe(struct i2c_client *client, struct device *dev, int irq
 
 	dev_set_drvdata(dev, chip);
 	psy_cfg.drv_data = chip;
-	psy_cfg.of_node = dev->of_node;
+	psy_cfg.fwnode = dev_fwnode(dev);
 
 	/* When current is not measured,
 	 * CURRENT_NOW and CURRENT_AVG properties should be invisible. */
@@ -1165,7 +1165,8 @@ static int max17042_platform_probe(struct platform_device *pdev)
 	if (!i2c)
 		return -EINVAL;
 
-	dev->of_node = dev->parent->of_node;
+	device_set_of_node_from_dev(dev, dev->parent);
+
 	id = platform_get_device_id(pdev);
 	irq = platform_get_irq(pdev, 0);
 

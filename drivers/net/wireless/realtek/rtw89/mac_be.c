@@ -29,6 +29,7 @@ static const u32 rtw89_mac_mem_base_addrs_be[RTW89_MAC_MEM_NUM] = {
 	[RTW89_MAC_MEM_CPU_LOCAL]	= CPU_LOCAL_BASE_ADDR_BE,
 	[RTW89_MAC_MEM_BSSID_CAM]	= BSSID_CAM_BASE_ADDR_BE,
 	[RTW89_MAC_MEM_WD_PAGE]		= WD_PAGE_BASE_ADDR_BE,
+	[RTW89_MAC_MEM_MLD_TBL]		= MLD_TBL_BASE_ADDR_BE,
 };
 
 static const struct rtw89_port_reg rtw89_port_base_be = {
@@ -55,6 +56,7 @@ static const struct rtw89_port_reg rtw89_port_base_be = {
 	.ptcl_dbg = R_BE_PTCL_DBG,
 	.ptcl_dbg_info = R_BE_PTCL_DBG_INFO,
 	.bcn_drop_all = R_BE_BCN_DROP_ALL0,
+	.bcn_psr_rpt = R_BE_BCN_PSR_RPT_P0,
 	.hiq_win = {R_BE_P0MB_HGQ_WINDOW_CFG_0, R_BE_PORT_HGQ_WINDOW_CFG,
 		    R_BE_PORT_HGQ_WINDOW_CFG + 1, R_BE_PORT_HGQ_WINDOW_CFG + 2,
 		    R_BE_PORT_HGQ_WINDOW_CFG + 3},
@@ -708,8 +710,8 @@ static int sec_eng_init_be(struct rtw89_dev *rtwdev)
 	val32 |= B_BE_CLK_EN_CGCMP | B_BE_CLK_EN_WAPI | B_BE_CLK_EN_WEP_TKIP |
 		 B_BE_SEC_TX_ENC | B_BE_SEC_RX_DEC |
 		 B_BE_MC_DEC | B_BE_BC_DEC |
-		 B_BE_BMC_MGNT_DEC | B_BE_UC_MGNT_DEC;
-	val32 &= ~B_BE_SEC_PRE_ENQUE_TX;
+		 B_BE_BMC_MGNT_DEC | B_BE_UC_MGNT_DEC |
+		 B_BE_SEC_PRE_ENQUE_TX;
 	rtw89_write32(rtwdev, R_BE_SEC_ENG_CTRL, val32);
 
 	rtw89_write32_set(rtwdev, R_BE_SEC_MPDU_PROC, B_BE_APPEND_ICV | B_BE_APPEND_MIC);
@@ -1166,7 +1168,7 @@ static int resp_pktctl_init_be(struct rtw89_dev *rtwdev, u8 mac_idx)
 
 	reg = rtw89_mac_reg_by_idx(rtwdev, R_BE_RESP_CSI_RESERVED_PAGE, mac_idx);
 	rtw89_write32_mask(rtwdev, reg, B_BE_CSI_RESERVED_START_PAGE_MASK, qt_cfg.pktid);
-	rtw89_write32_mask(rtwdev, reg, B_BE_CSI_RESERVED_PAGE_NUM_MASK, qt_cfg.pg_num);
+	rtw89_write32_mask(rtwdev, reg, B_BE_CSI_RESERVED_PAGE_NUM_MASK, qt_cfg.pg_num + 1);
 
 	return 0;
 }
@@ -1865,7 +1867,7 @@ int rtw89_mac_cfg_ctrl_path_v2(struct rtw89_dev *rtwdev, bool wl)
 	if (wl)
 		return 0;
 
-	for (i = 0; i < RTW89_PHY_MAX; i++) {
+	for (i = 0; i < RTW89_PHY_NUM; i++) {
 		g[i].gnt_bt_sw_en = 1;
 		g[i].gnt_bt = 1;
 		g[i].gnt_wl_sw_en = 1;
@@ -2144,6 +2146,10 @@ static int rtw89_mac_set_csi_para_reg_be(struct rtw89_dev *rtwdev,
 				 IEEE80211_VHT_CAP_SOUNDING_DIMENSIONS_MASK);
 		sound_dim = min(sound_dim, t);
 	}
+
+	/* Disable stbc_en in VHT 160MHz to avoid IOT issues with certain APs */
+	if (link_sta->vht_cap.cap & IEEE80211_VHT_CAP_SUPP_CHAN_WIDTH_160MHZ)
+		stbc_en = 0;
 
 	nc = min(nc, sound_dim);
 	nr = min(nr, sound_dim);
@@ -2566,6 +2572,7 @@ const struct rtw89_mac_gen_def rtw89_mac_gen_be = {
 	.filter_model_addr = R_BE_FILTER_MODEL_ADDR,
 	.indir_access_addr = R_BE_INDIR_ACCESS_ENTRY,
 	.mem_base_addrs = rtw89_mac_mem_base_addrs_be,
+	.mem_page_size = MAC_MEM_DUMP_PAGE_SIZE_BE,
 	.rx_fltr = R_BE_RX_FLTR_OPT,
 	.port_base = &rtw89_port_base_be,
 	.agg_len_ht = R_BE_AGG_LEN_HT_0,
@@ -2585,10 +2592,13 @@ const struct rtw89_mac_gen_def rtw89_mac_gen_be = {
 		.mask = B_BE_RXTRIG_RU26_DIS,
 	},
 	.wow_ctrl = {.addr = R_BE_WOW_CTRL, .mask = B_BE_WOW_WOWEN,},
+	.agg_limit = {.addr = R_BE_AMPDU_AGG_LIMIT, .mask = B_BE_AMPDU_MAX_TIME_MASK,},
+	.txcnt_limit = {.addr = R_BE_TXCNT, .mask = B_BE_L_TXCNT_LMT_MASK,},
 
 	.check_mac_en = rtw89_mac_check_mac_en_be,
 	.sys_init = sys_init_be,
 	.trx_init = trx_init_be,
+	.err_imr_ctrl = err_imr_ctrl_be,
 	.hci_func_en = rtw89_mac_hci_func_en_be,
 	.dmac_func_pre_en = rtw89_mac_dmac_func_pre_en_be,
 	.dle_func_en = dle_func_en_be,
@@ -2634,6 +2644,8 @@ const struct rtw89_mac_gen_def rtw89_mac_gen_be = {
 
 	.is_txq_empty = mac_is_txq_empty_be,
 
+	.prep_chan_list = rtw89_hw_scan_prep_chan_list_be,
+	.free_chan_list = rtw89_hw_scan_free_chan_list_be,
 	.add_chan_list = rtw89_hw_scan_add_chan_list_be,
 	.add_chan_list_pno = rtw89_pno_scan_add_chan_list_be,
 	.scan_offload = rtw89_fw_h2c_scan_offload_be,

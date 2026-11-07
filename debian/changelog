@@ -1,3 +1,12 @@
+linux (6.18.62-1elster1) vyatta; urgency=high
+
+  * Move the router kernel from 6.14-rc4 to maintained Linux 6.18 LTS.
+  * Import upstream 6.18.62, verified against Greg Kroah-Hartman's release
+    signature obtained through kernel.org WKD. Retain DANOS TUN metadata,
+    permanent MAC, GRE/MPLS/BYPASS integration and Debian hardening.
+
+ -- Erik Ziegenbalg <erikziege@gmail.com>  Fri, 06 Nov 2026 23:55:00 +0000
+
 linux (6.14.0-1elster6) vyatta; urgency=medium
 
   * Re-enable the Debian hardening patches that DANOS 2105's kernel carried

@@ -60,6 +60,20 @@
 bool no_hash_pointers __ro_after_init;
 EXPORT_SYMBOL_GPL(no_hash_pointers);
 
+/*
+ * Hashed pointers policy selected by "hash_pointers=..." boot param
+ *
+ * `auto`   - Hashed pointers enabled unless disabled by slub_debug_enabled=true
+ * `always` - Hashed pointers enabled unconditionally
+ * `never`  - Hashed pointers disabled unconditionally
+ */
+enum hash_pointers_policy {
+	HASH_PTR_AUTO = 0,
+	HASH_PTR_ALWAYS,
+	HASH_PTR_NEVER
+};
+static enum hash_pointers_policy hash_pointers_mode __initdata;
+
 noinline
 static unsigned long long simple_strntoull(const char *startp, char **endp, unsigned int base, size_t max_chars)
 {
@@ -113,6 +127,13 @@ unsigned long simple_strtoul(const char *cp, char **endp, unsigned int base)
 	return simple_strtoull(cp, endp, base);
 }
 EXPORT_SYMBOL(simple_strtoul);
+
+unsigned long simple_strntoul(const char *cp, char **endp, unsigned int base,
+			      size_t max_chars)
+{
+	return simple_strntoull(cp, endp, base, max_chars);
+}
+EXPORT_SYMBOL(simple_strntoul);
 
 /**
  * simple_strtol - convert a string to a signed long
@@ -1692,8 +1713,11 @@ char *escaped_string(char *buf, char *end, u8 *addr, struct printf_spec spec,
 	return buf;
 }
 
+__diag_push();
+__diag_ignore(GCC, all, "-Wsuggest-attribute=format",
+	      "Not a valid __printf() conversion candidate.");
 static char *va_format(char *buf, char *end, struct va_format *va_fmt,
-		       struct printf_spec spec, const char *fmt)
+		       struct printf_spec spec)
 {
 	va_list va;
 
@@ -1706,6 +1730,7 @@ static char *va_format(char *buf, char *end, struct va_format *va_fmt,
 
 	return buf;
 }
+__diag_pop();
 
 static noinline_for_stack
 char *uuid_string(char *buf, char *end, const u8 *addr,
@@ -1781,27 +1806,49 @@ char *fourcc_string(char *buf, char *end, const u32 *fourcc,
 	char output[sizeof("0123 little-endian (0x01234567)")];
 	char *p = output;
 	unsigned int i;
+	bool pixel_fmt = false;
 	u32 orig, val;
 
-	if (fmt[1] != 'c' || fmt[2] != 'c')
+	if (fmt[1] != 'c')
 		return error_string(buf, end, "(%p4?)", spec);
 
 	if (check_pointer(&buf, end, fourcc, spec))
 		return buf;
 
 	orig = get_unaligned(fourcc);
-	val = orig & ~BIT(31);
+	switch (fmt[2]) {
+	case 'h':
+		if (fmt[3] == 'R')
+			orig = swab32(orig);
+		break;
+	case 'l':
+		orig = (__force u32)cpu_to_le32(orig);
+		break;
+	case 'b':
+		orig = (__force u32)cpu_to_be32(orig);
+		break;
+	case 'c':
+		/* Pixel formats are printed LSB-first */
+		pixel_fmt = true;
+		break;
+	default:
+		return error_string(buf, end, "(%p4?)", spec);
+	}
+
+	val = pixel_fmt ? swab32(orig & ~BIT(31)) : orig;
 
 	for (i = 0; i < sizeof(u32); i++) {
-		unsigned char c = val >> (i * 8);
+		unsigned char c = val >> ((3 - i) * 8);
 
 		/* Print non-control ASCII characters as-is, dot otherwise */
 		*p++ = isascii(c) && isprint(c) ? c : '.';
 	}
 
-	*p++ = ' ';
-	strcpy(p, orig & BIT(31) ? "big-endian" : "little-endian");
-	p += strlen(p);
+	if (pixel_fmt) {
+		*p++ = ' ';
+		strcpy(p, orig & BIT(31) ? "big-endian" : "little-endian");
+		p += strlen(p);
+	}
 
 	*p++ = ' ';
 	*p++ = '(';
@@ -1881,9 +1928,6 @@ char *rtc_str(char *buf, char *end, const struct rtc_time *tm,
 	bool found = true;
 	int count = 2;
 
-	if (check_pointer(&buf, end, tm, spec))
-		return buf;
-
 	switch (fmt[count]) {
 	case 'd':
 		have_t = false;
@@ -1949,6 +1993,9 @@ static noinline_for_stack
 char *time_and_date(char *buf, char *end, void *ptr, struct printf_spec spec,
 		    const char *fmt)
 {
+	if (check_pointer(&buf, end, ptr, spec))
+		return buf;
+
 	switch (fmt[1]) {
 	case 'R':
 		return rtc_str(buf, end, (const struct rtc_time *)ptr, spec, fmt);
@@ -1969,15 +2016,11 @@ char *clock(char *buf, char *end, struct clk *clk, struct printf_spec spec,
 	if (check_pointer(&buf, end, clk, spec))
 		return buf;
 
-	switch (fmt[1]) {
-	case 'n':
-	default:
 #ifdef CONFIG_COMMON_CLK
-		return string(buf, end, __clk_get_name(clk), spec);
+	return string(buf, end, __clk_get_name(clk), spec);
 #else
-		return ptr_to_id(buf, end, clk, spec);
+	return ptr_to_id(buf, end, clk, spec);
 #endif
-	}
 }
 
 static
@@ -2259,12 +2302,23 @@ char *resource_or_range(const char *fmt, char *buf, char *end, void *ptr,
 	return resource_string(buf, end, ptr, spec, fmt);
 }
 
-int __init no_hash_pointers_enable(char *str)
+void __init hash_pointers_finalize(bool slub_debug)
 {
-	if (no_hash_pointers)
-		return 0;
+	switch (hash_pointers_mode) {
+	case HASH_PTR_ALWAYS:
+		no_hash_pointers = false;
+		break;
+	case HASH_PTR_NEVER:
+		no_hash_pointers = true;
+		break;
+	case HASH_PTR_AUTO:
+	default:
+		no_hash_pointers = slub_debug;
+		break;
+	}
 
-	no_hash_pointers = true;
+	if (!no_hash_pointers)
+		return;
 
 	pr_warn("**********************************************************\n");
 	pr_warn("**   NOTICE NOTICE NOTICE NOTICE NOTICE NOTICE NOTICE   **\n");
@@ -2277,15 +2331,40 @@ int __init no_hash_pointers_enable(char *str)
 	pr_warn("** the kernel, report this immediately to your system   **\n");
 	pr_warn("** administrator!                                       **\n");
 	pr_warn("**                                                      **\n");
+	pr_warn("** Use hash_pointers=always to force this mode off      **\n");
+	pr_warn("**                                                      **\n");
 	pr_warn("**   NOTICE NOTICE NOTICE NOTICE NOTICE NOTICE NOTICE   **\n");
 	pr_warn("**********************************************************\n");
+}
+
+static int __init hash_pointers_mode_parse(char *str)
+{
+	if (!str) {
+		pr_warn("Hash pointers mode empty; falling back to auto.\n");
+		hash_pointers_mode = HASH_PTR_AUTO;
+	} else if (strncmp(str, "auto", 4) == 0)   {
+		pr_info("Hash pointers mode set to auto.\n");
+		hash_pointers_mode = HASH_PTR_AUTO;
+	} else if (strncmp(str, "never", 5) == 0) {
+		pr_info("Hash pointers mode set to never.\n");
+		hash_pointers_mode = HASH_PTR_NEVER;
+	} else if (strncmp(str, "always", 6) == 0) {
+		pr_info("Hash pointers mode set to always.\n");
+		hash_pointers_mode = HASH_PTR_ALWAYS;
+	} else {
+		pr_warn("Unknown hash_pointers mode '%s' specified; assuming auto.\n", str);
+		hash_pointers_mode = HASH_PTR_AUTO;
+	}
 
 	return 0;
 }
-early_param("no_hash_pointers", no_hash_pointers_enable);
+early_param("hash_pointers", hash_pointers_mode_parse);
 
-/* Used for Rust formatting ('%pA'). */
-char *rust_fmt_argument(char *buf, char *end, void *ptr);
+static int __init no_hash_pointers_enable(char *str)
+{
+	return hash_pointers_mode_parse("never");
+}
+early_param("no_hash_pointers", no_hash_pointers_enable);
 
 /*
  * Show a '%p' thing.  A kernel extension is that the '%p' is followed
@@ -2365,6 +2444,12 @@ char *rust_fmt_argument(char *buf, char *end, void *ptr);
  *       read the documentation (path below) first.
  * - 'NF' For a netdev_features_t
  * - '4cc' V4L2 or DRM FourCC code, with endianness and raw numerical value.
+ * - '4c[h[R]lb]' For generic FourCC code with raw numerical value. Both are
+ *	 displayed in the big-endian format. This is the opposite of V4L2 or
+ *	 DRM FourCCs.
+ *	 The additional specifiers define what endianness is used to load
+ *	 the stored bytes. The data might be interpreted using the host,
+ *	 reversed host byte order, little-endian, or big-endian.
  * - 'h[CDN]' For a variable-length buffer, it prints it as a hex string with
  *            a certain separator (' ' by default):
  *              C colon
@@ -2382,8 +2467,6 @@ char *rust_fmt_argument(char *buf, char *end, void *ptr);
  *      T    time64_t
  * - 'C' For a clock, it prints the name (Common Clock Framework) or address
  *       (legacy clock framework) of the clock
- * - 'Cn' For a clock, it prints the name (Common Clock Framework) or address
- *        (legacy clock framework) of the clock
  * - 'G' For flags to be printed as a collection of symbolic strings that would
  *       construct the specific value. Supported flags given by option:
  *       p page flags (see struct page) given as pointer to unsigned long
@@ -2462,7 +2545,7 @@ char *pointer(const char *fmt, char *buf, char *end, void *ptr,
 	case 'U':
 		return uuid_string(buf, end, ptr, spec, fmt);
 	case 'V':
-		return va_format(buf, end, ptr, spec, fmt);
+		return va_format(buf, end, ptr, spec);
 	case 'K':
 		return restricted_pointer(buf, end, ptr, spec);
 	case 'N':
@@ -2536,6 +2619,18 @@ static unsigned char spec_flag(unsigned char c)
 	return (c < sizeof(spec_flag_array)) ? spec_flag_array[c] : 0;
 }
 
+static void set_field_width(struct printf_spec *spec, int width)
+{
+	spec->field_width = clamp(width, -FIELD_WIDTH_MAX, FIELD_WIDTH_MAX);
+	WARN_ONCE(spec->field_width != width, "field width %d out of range", width);
+}
+
+static void set_precision(struct printf_spec *spec, int prec)
+{
+	spec->precision = clamp(prec, 0, PRECISION_MAX);
+	WARN_ONCE(spec->precision < prec, "precision %d too large", prec);
+}
+
 /*
  * Helper function to decode printf style format.
  * Each call decode a token from the format and return the
@@ -2606,7 +2701,7 @@ struct fmt format_decode(struct fmt fmt, struct printf_spec *spec)
 	spec->field_width = -1;
 
 	if (isdigit(*fmt.str))
-		spec->field_width = skip_atoi(&fmt.str);
+		set_field_width(spec, skip_atoi(&fmt.str));
 	else if (unlikely(*fmt.str == '*')) {
 		/* it's the next argument */
 		fmt.state = FORMAT_STATE_WIDTH;
@@ -2620,9 +2715,7 @@ precision:
 	if (unlikely(*fmt.str == '.')) {
 		fmt.str++;
 		if (isdigit(*fmt.str)) {
-			spec->precision = skip_atoi(&fmt.str);
-			if (spec->precision < 0)
-				spec->precision = 0;
+			set_precision(spec, skip_atoi(&fmt.str));
 		} else if (*fmt.str == '*') {
 			/* it's the next argument */
 			fmt.state = FORMAT_STATE_PRECISION;
@@ -2693,24 +2786,6 @@ qualifier:
 	WARN_ONCE(1, "Please remove unsupported %%%c in format string\n", *fmt.str);
 	fmt.state = FORMAT_STATE_INVALID;
 	return fmt;
-}
-
-static void
-set_field_width(struct printf_spec *spec, int width)
-{
-	spec->field_width = width;
-	if (WARN_ONCE(spec->field_width != width, "field width %d too large", width)) {
-		spec->field_width = clamp(width, -FIELD_WIDTH_MAX, FIELD_WIDTH_MAX);
-	}
-}
-
-static void
-set_precision(struct printf_spec *spec, int prec)
-{
-	spec->precision = prec;
-	if (WARN_ONCE(spec->precision != prec, "precision %d too large", prec)) {
-		spec->precision = clamp(prec, 0, PRECISION_MAX);
-	}
 }
 
 /*

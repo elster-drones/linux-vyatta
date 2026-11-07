@@ -632,20 +632,24 @@ static int sienna_cichlid_get_power_limit(struct smu_context *smu,
 	struct smu_11_0_7_powerplay_table *powerplay_table =
 		(struct smu_11_0_7_powerplay_table *)smu->smu_table.power_play_table;
 	struct smu_11_0_7_overdrive_table *od_settings = smu->od_settings;
-	uint32_t power_limit, od_percent_upper = 0, od_percent_lower = 0;
-	uint16_t *table_member;
+	uint32_t current_limit, default_limit;
+	uint32_t od_percent_upper = 0, od_percent_lower = 0;
+	u16 *power_limit_ac, *power_limit_dc;
 
-	GET_PPTABLE_MEMBER(SocketPowerLimitAc, &table_member);
+	GET_PPTABLE_MEMBER(SocketPowerLimitAc, &power_limit_ac);
+	GET_PPTABLE_MEMBER(SocketPowerLimitDc, &power_limit_dc);
 
-	if (smu_v11_0_get_current_power_limit(smu, &power_limit)) {
-		power_limit =
-			table_member[PPT_THROTTLER_PPT0];
-	}
+	default_limit = smu->adev->pm.ac_power ?
+		power_limit_ac[PPT_THROTTLER_PPT0] :
+		power_limit_dc[PPT_THROTTLER_PPT0];
+
+	if (smu_v11_0_get_current_power_limit(smu, &current_limit))
+		current_limit = default_limit;
 
 	if (current_power_limit)
-		*current_power_limit = power_limit;
+		*current_power_limit = current_limit;
 	if (default_power_limit)
-		*default_power_limit = power_limit;
+		*default_power_limit = default_limit;
 
 	if (powerplay_table) {
 		if (smu->od_enabled &&
@@ -659,15 +663,15 @@ static int sienna_cichlid_get_power_limit(struct smu_context *smu,
 	}
 
 	dev_dbg(smu->adev->dev, "od percent upper:%d, od percent lower:%d (default power: %d)\n",
-					od_percent_upper, od_percent_lower, power_limit);
+		 od_percent_upper, od_percent_lower, default_limit);
 
 	if (max_power_limit) {
-		*max_power_limit = power_limit * (100 + od_percent_upper);
+		*max_power_limit = default_limit * (100 + od_percent_upper);
 		*max_power_limit /= 100;
 	}
 
 	if (min_power_limit) {
-		*min_power_limit = power_limit * (100 - od_percent_lower);
+		*min_power_limit = default_limit * (100 - od_percent_lower);
 		*min_power_limit /= 100;
 	}
 	return 0;
@@ -2145,7 +2149,8 @@ static int sienna_cichlid_update_pcie_parameters(struct smu_context *smu,
 	uint8_t min_gen_speed, max_gen_speed;
 	uint8_t min_lane_width, max_lane_width;
 	uint32_t smu_pcie_arg;
-	int ret, i;
+	int ret = 0;
+	int i;
 
 	GET_PPTABLE_MEMBER(PcieGenSpeed, &table_member1);
 	GET_PPTABLE_MEMBER(PcieLaneCount, &table_member2);
@@ -2170,19 +2175,22 @@ static int sienna_cichlid_update_pcie_parameters(struct smu_context *smu,
 	pcie_table->pcie_lane[1] = max_lane_width;
 
 	for (i = 0; i < NUM_LINK_LEVELS; i++) {
-		smu_pcie_arg = (i << 16 |
+		if (!(smu->adev->pm.pp_feature & PP_PCIE_DPM_MASK) ||
+			table_member1[i] > pcie_gen_cap || table_member2[i] > pcie_width_cap) {
+			smu_pcie_arg = (i << 16 |
 				pcie_table->pcie_gen[i] << 8 |
 				pcie_table->pcie_lane[i]);
 
-		ret = smu_cmn_send_smc_msg_with_param(smu,
-				SMU_MSG_OverridePcieParameters,
-				smu_pcie_arg,
-				NULL);
-		if (ret)
-			return ret;
+			ret = smu_cmn_send_smc_msg_with_param(smu,
+						SMU_MSG_OverridePcieParameters,
+						smu_pcie_arg,
+						NULL);
+			if (ret)
+				break;
+		}
 	}
 
-	return 0;
+	return ret;
 }
 
 static int sienna_cichlid_get_dpm_ultimate_freq(struct smu_context *smu,
@@ -2644,10 +2652,10 @@ static int sienna_cichlid_i2c_control_init(struct smu_context *smu)
 		control->quirks = &sienna_cichlid_i2c_control_quirks;
 		i2c_set_adapdata(control, smu_i2c);
 
-		res = i2c_add_adapter(control);
+		res = devm_i2c_add_adapter(adev->dev, control);
 		if (res) {
 			DRM_ERROR("Failed to register hw i2c, err: %d\n", res);
-			goto Out_err;
+			return res;
 		}
 	}
 	/* assign the buses used for the FRU EEPROM and RAS EEPROM */
@@ -2656,27 +2664,12 @@ static int sienna_cichlid_i2c_control_init(struct smu_context *smu)
 	adev->pm.fru_eeprom_i2c_bus = &adev->pm.smu_i2c[0].adapter;
 
 	return 0;
-Out_err:
-	for ( ; i >= 0; i--) {
-		struct amdgpu_smu_i2c_bus *smu_i2c = &adev->pm.smu_i2c[i];
-		struct i2c_adapter *control = &smu_i2c->adapter;
-
-		i2c_del_adapter(control);
-	}
-	return res;
 }
 
 static void sienna_cichlid_i2c_control_fini(struct smu_context *smu)
 {
 	struct amdgpu_device *adev = smu->adev;
-	int i;
 
-	for (i = 0; i < MAX_SMU_I2C_BUSES; i++) {
-		struct amdgpu_smu_i2c_bus *smu_i2c = &adev->pm.smu_i2c[i];
-		struct i2c_adapter *control = &smu_i2c->adapter;
-
-		i2c_del_adapter(control);
-	}
 	adev->pm.ras_eeprom_i2c_bus = NULL;
 	adev->pm.fru_eeprom_i2c_bus = NULL;
 }
@@ -3089,11 +3082,6 @@ static int sienna_cichlid_stb_get_data_direct(struct smu_context *smu,
 	return 0;
 }
 
-static bool sienna_cichlid_is_mode2_reset_supported(struct smu_context *smu)
-{
-	return true;
-}
-
 static int sienna_cichlid_mode2_reset(struct smu_context *smu)
 {
 	int ret = 0, index;
@@ -3229,7 +3217,6 @@ static const struct pptable_funcs sienna_cichlid_ppt_funcs = {
 	.get_default_config_table_settings = sienna_cichlid_get_default_config_table_settings,
 	.set_config_table = sienna_cichlid_set_config_table,
 	.get_unique_id = sienna_cichlid_get_unique_id,
-	.mode2_reset_is_support = sienna_cichlid_is_mode2_reset_supported,
 	.mode2_reset = sienna_cichlid_mode2_reset,
 };
 

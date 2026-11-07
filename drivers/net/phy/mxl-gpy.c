@@ -225,14 +225,8 @@ static int gpy_hwmon_register(struct phy_device *phydev)
 {
 	struct device *dev = &phydev->mdio.dev;
 	struct device *hwmon_dev;
-	char *hwmon_name;
 
-	hwmon_name = devm_hwmon_sanitize_name(dev, dev_name(dev));
-	if (IS_ERR(hwmon_name))
-		return PTR_ERR(hwmon_name);
-
-	hwmon_dev = devm_hwmon_device_register_with_info(dev, hwmon_name,
-							 phydev,
+	hwmon_dev = devm_hwmon_device_register_with_info(dev, NULL, phydev,
 							 &gpy_hwmon_chip_info,
 							 NULL);
 
@@ -546,7 +540,7 @@ static int gpy_update_interface(struct phy_device *phydev)
 	/* Interface mode is fixed for USXGMII and integrated PHY */
 	if (phydev->interface == PHY_INTERFACE_MODE_USXGMII ||
 	    phydev->interface == PHY_INTERFACE_MODE_INTERNAL)
-		return -EINVAL;
+		return 0;
 
 	/* Automatically switch SERDES interface between SGMII and 2500-BaseX
 	 * according to speed. Disable ANEG in 2500-BaseX mode.
@@ -584,13 +578,7 @@ static int gpy_update_interface(struct phy_device *phydev)
 		break;
 	}
 
-	if (phydev->speed == SPEED_2500 || phydev->speed == SPEED_1000) {
-		ret = genphy_read_master_slave(phydev);
-		if (ret < 0)
-			return ret;
-	}
-
-	return gpy_update_mdix(phydev);
+	return 0;
 }
 
 static int gpy_read_status(struct phy_device *phydev)
@@ -643,6 +631,16 @@ static int gpy_read_status(struct phy_device *phydev)
 
 	if (phydev->link) {
 		ret = gpy_update_interface(phydev);
+		if (ret < 0)
+			return ret;
+
+		if (phydev->speed == SPEED_2500 || phydev->speed == SPEED_1000) {
+			ret = genphy_read_master_slave(phydev);
+			if (ret < 0)
+				return ret;
+		}
+
+		ret = gpy_update_mdix(phydev);
 		if (ret < 0)
 			return ret;
 	}
@@ -813,7 +811,7 @@ static void gpy_get_wol(struct phy_device *phydev,
 	wol->wolopts = priv->wolopts;
 }
 
-static int gpy_loopback(struct phy_device *phydev, bool enable)
+static int gpy_loopback(struct phy_device *phydev, bool enable, int speed)
 {
 	struct gpy_priv *priv = phydev->priv;
 	u16 set = 0;
@@ -821,6 +819,9 @@ static int gpy_loopback(struct phy_device *phydev, bool enable)
 
 	if (enable) {
 		u64 now = get_jiffies_64();
+
+		if (speed)
+			return -EOPNOTSUPP;
 
 		/* wait until 3 seconds from last disable */
 		if (time_before64(now, priv->lb_dis_to))
@@ -845,15 +846,15 @@ static int gpy_loopback(struct phy_device *phydev, bool enable)
 	return 0;
 }
 
-static int gpy115_loopback(struct phy_device *phydev, bool enable)
+static int gpy115_loopback(struct phy_device *phydev, bool enable, int speed)
 {
 	struct gpy_priv *priv = phydev->priv;
 
 	if (enable)
-		return gpy_loopback(phydev, enable);
+		return gpy_loopback(phydev, enable, speed);
 
 	if (priv->fw_minor > 0x76)
-		return gpy_loopback(phydev, 0);
+		return gpy_loopback(phydev, 0, 0);
 
 	return genphy_soft_reset(phydev);
 }

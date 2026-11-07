@@ -118,7 +118,7 @@ static struct drm_driver driver_platform;
 #ifdef CONFIG_DEBUG_FS
 struct dentry *nouveau_debugfs_root;
 
-/**
+/*
  * gsp_logs - list of nvif_log GSP-RM logging buffers
  *
  * Head pointer to a a list of nvif_log buffers that is created for each GPU
@@ -503,11 +503,16 @@ nouveau_accel_init(struct nouveau_drm *drm)
 		case KEPLER_CHANNEL_GPFIFO_B:
 		case MAXWELL_CHANNEL_GPFIFO_A:
 		case PASCAL_CHANNEL_GPFIFO_A:
+			ret = nvc0_fence_create(drm);
+			break;
 		case VOLTA_CHANNEL_GPFIFO_A:
 		case TURING_CHANNEL_GPFIFO_A:
 		case AMPERE_CHANNEL_GPFIFO_A:
 		case AMPERE_CHANNEL_GPFIFO_B:
-			ret = nvc0_fence_create(drm);
+		case HOPPER_CHANNEL_GPFIFO_A:
+		case BLACKWELL_CHANNEL_GPFIFO_A:
+		case BLACKWELL_CHANNEL_GPFIFO_B:
+			ret = gv100_fence_create(drm);
 			break;
 		default:
 			break;
@@ -579,6 +584,7 @@ nouveau_drm_device_fini(struct nouveau_drm *drm)
 	if (nouveau_pmops_runtime()) {
 		pm_runtime_get_sync(dev->dev);
 		pm_runtime_forbid(dev->dev);
+		pm_runtime_dont_use_autosuspend(dev->dev);
 	}
 
 	nouveau_led_fini(dev);
@@ -869,7 +875,7 @@ static int nouveau_drm_probe(struct pci_dev *pdev,
 	/* Remove conflicting drivers (vesafb, efifb etc). */
 	ret = aperture_remove_conflicting_pci_devices(pdev, driver_pci.name);
 	if (ret)
-		return ret;
+		goto fail_nvkm;
 
 	pci_set_master(pdev);
 
@@ -978,7 +984,7 @@ nouveau_do_suspend(struct nouveau_drm *drm, bool runtime)
 	}
 
 	NV_DEBUG(drm, "suspending object tree...\n");
-	ret = nvif_client_suspend(&drm->_client);
+	ret = nvif_client_suspend(&drm->_client, runtime);
 	if (ret)
 		goto fail_client;
 
@@ -1079,6 +1085,10 @@ nouveau_pmops_freeze(struct device *dev)
 {
 	struct nouveau_drm *drm = dev_get_drvdata(dev);
 
+	if (drm->dev->switch_power_state == DRM_SWITCH_POWER_OFF ||
+	    drm->dev->switch_power_state == DRM_SWITCH_POWER_DYNAMIC_OFF)
+		return 0;
+
 	return nouveau_do_suspend(drm, false);
 }
 
@@ -1086,6 +1096,10 @@ static int
 nouveau_pmops_thaw(struct device *dev)
 {
 	struct nouveau_drm *drm = dev_get_drvdata(dev);
+
+	if (drm->dev->switch_power_state == DRM_SWITCH_POWER_OFF ||
+	    drm->dev->switch_power_state == DRM_SWITCH_POWER_DYNAMIC_OFF)
+		return 0;
 
 	return nouveau_do_resume(drm, false);
 }
@@ -1206,10 +1220,8 @@ nouveau_drm_open(struct drm_device *dev, struct drm_file *fpriv)
 	mutex_unlock(&drm->clients_lock);
 
 done:
-	if (ret && cli) {
-		nouveau_cli_fini(cli);
+	if (ret && cli)
 		kfree(cli);
-	}
 
 	pm_runtime_mark_last_busy(dev->dev);
 	pm_runtime_put_autosuspend(dev->dev);
@@ -1448,9 +1460,7 @@ nouveau_drm_init(void)
 	if (!nouveau_modeset)
 		return 0;
 
-	ret = nouveau_module_debugfs_init();
-	if (ret)
-		return ret;
+	nouveau_module_debugfs_init();
 
 #ifdef CONFIG_NOUVEAU_PLATFORM_DRIVER
 	platform_driver_register(&nouveau_platform_driver);

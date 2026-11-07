@@ -1056,8 +1056,7 @@ static int brcmuart_probe(struct platform_device *pdev)
 	}
 
 	/* setup HR timer */
-	hrtimer_init(&priv->hrt, CLOCK_MONOTONIC, HRTIMER_MODE_ABS);
-	priv->hrt.function = brcmuart_hrtimer_func;
+	hrtimer_setup(&priv->hrt, brcmuart_hrtimer_func, CLOCK_MONOTONIC, HRTIMER_MODE_ABS);
 
 	up.port.shutdown = brcmuart_shutdown;
 	up.port.startup = brcmuart_startup;
@@ -1124,8 +1123,8 @@ static void brcmuart_remove(struct platform_device *pdev)
 	struct brcmuart_priv *priv = platform_get_drvdata(pdev);
 
 	debugfs_remove_recursive(priv->debugfs_dir);
-	hrtimer_cancel(&priv->hrt);
 	serial8250_unregister_port(priv->line);
+	hrtimer_cancel(&priv->hrt);
 	brcmuart_free_bufs(&pdev->dev, priv);
 	if (priv->dma_enabled)
 		brcmuart_arbitration(priv, 0);

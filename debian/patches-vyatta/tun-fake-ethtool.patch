@@ -9,8 +9,10 @@ Signed-off-by: Stephen Hemminger <stephen@networkplumber.org>
  include/uapi/linux/if_tunnel.h |    8 ++++++
  2 files changed, 50 insertions(+), 10 deletions(-)
 
---- a/drivers/net/tun.c
-+++ b/drivers/net/tun.c
+Index: elster-router-kernel/drivers/net/tun.c
+===================================================================
+--- elster-router-kernel.orig/drivers/net/tun.c
++++ elster-router-kernel/drivers/net/tun.c
 @@ -52,6 +52,7 @@
  #include <linux/if_arp.h>
  #include <linux/if_ether.h>
@@ -30,7 +32,7 @@ Signed-off-by: Stephen Hemminger <stephen@networkplumber.org>
  	/* init args */
  	struct file *file;
  	struct ifreq *ifr;
-@@ -980,6 +985,11 @@ static int tun_net_init(struct net_devic
+@@ -920,6 +925,11 @@ static int tun_net_init(struct net_devic
  
  	spin_lock_init(&tun->lock);
  
@@ -42,7 +44,7 @@ Signed-off-by: Stephen Hemminger <stephen@networkplumber.org>
  	err = security_tun_dev_alloc_security(&tun->security);
  	if (err < 0)
  		return err;
-@@ -1167,6 +1177,35 @@ static netdev_features_t tun_net_fix_fea
+@@ -1106,6 +1116,35 @@ static netdev_features_t tun_net_fix_fea
  	return (features & tun->set_features) | (features & ~TUN_USER_FEATURES);
  }
  
@@ -78,7 +80,7 @@ Signed-off-by: Stephen Hemminger <stephen@networkplumber.org>
  static void tun_set_headroom(struct net_device *dev, int new_hr)
  {
  	struct tun_struct *tun = netdev_priv(dev);
-@@ -1335,6 +1374,7 @@ static const struct net_device_ops tap_n
+@@ -1279,6 +1318,7 @@ static const struct net_device_ops tap_n
  	.ndo_start_xmit		= tun_net_xmit,
  	.ndo_fix_features	= tun_net_fix_features,
  	.ndo_set_rx_mode	= tun_net_mclist,
@@ -86,7 +88,7 @@ Signed-off-by: Stephen Hemminger <stephen@networkplumber.org>
  	.ndo_set_mac_address	= eth_mac_addr,
  	.ndo_validate_addr	= eth_validate_addr,
  	.ndo_select_queue	= tun_select_queue,
-@@ -3601,17 +3641,9 @@ static void tun_get_drvinfo(struct net_d
+@@ -3539,17 +3579,9 @@ static void tun_get_drvinfo(struct net_d
  {
  	struct tun_struct *tun = netdev_priv(dev);
  
@@ -106,8 +108,10 @@ Signed-off-by: Stephen Hemminger <stephen@networkplumber.org>
  }
  
  static u32 tun_get_msglevel(struct net_device *dev)
---- a/include/uapi/linux/if_tunnel.h
-+++ b/include/uapi/linux/if_tunnel.h
+Index: elster-router-kernel/include/uapi/linux/if_tunnel.h
+===================================================================
+--- elster-router-kernel.orig/include/uapi/linux/if_tunnel.h
++++ elster-router-kernel/include/uapi/linux/if_tunnel.h
 @@ -22,6 +22,14 @@
  #define SIOCDEL6RD      (SIOCDEVPRIVATE + 10)
  #define SIOCCHG6RD      (SIOCDEVPRIVATE + 11)

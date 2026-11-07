@@ -174,8 +174,8 @@ static const struct bin_attribute sysfs_fw_dump_attr = {
 		.mode = S_IRUSR | S_IWUSR,
 	},
 	.size = 0,
-	.read_new = qla2x00_sysfs_read_fw_dump,
-	.write_new = qla2x00_sysfs_write_fw_dump,
+	.read = qla2x00_sysfs_read_fw_dump,
+	.write = qla2x00_sysfs_write_fw_dump,
 };
 
 static ssize_t
@@ -288,8 +288,8 @@ static const struct bin_attribute sysfs_nvram_attr = {
 		.mode = S_IRUSR | S_IWUSR,
 	},
 	.size = 512,
-	.read_new = qla2x00_sysfs_read_nvram,
-	.write_new = qla2x00_sysfs_write_nvram,
+	.read = qla2x00_sysfs_read_nvram,
+	.write = qla2x00_sysfs_write_nvram,
 };
 
 static ssize_t
@@ -350,8 +350,8 @@ static const struct bin_attribute sysfs_optrom_attr = {
 		.mode = S_IRUSR | S_IWUSR,
 	},
 	.size = 0,
-	.read_new = qla2x00_sysfs_read_optrom,
-	.write_new = qla2x00_sysfs_write_optrom,
+	.read = qla2x00_sysfs_read_optrom,
+	.write = qla2x00_sysfs_write_optrom,
 };
 
 static ssize_t
@@ -535,7 +535,7 @@ static const struct bin_attribute sysfs_optrom_ctl_attr = {
 		.mode = S_IWUSR,
 	},
 	.size = 0,
-	.write_new = qla2x00_sysfs_write_optrom_ctl,
+	.write = qla2x00_sysfs_write_optrom_ctl,
 };
 
 static ssize_t
@@ -580,7 +580,6 @@ qla2x00_sysfs_read_vpd(struct file *filp, struct kobject *kobj,
 	ha->isp_ops->read_optrom(vha, ha->vpd, faddr, ha->vpd_size);
 	mutex_unlock(&ha->optrom_mutex);
 
-	ha->isp_ops->read_optrom(vha, ha->vpd, faddr, ha->vpd_size);
 skip:
 	return memory_read_from_buffer(buf, count, &off, ha->vpd, ha->vpd_size);
 }
@@ -648,8 +647,8 @@ static const struct bin_attribute sysfs_vpd_attr = {
 		.mode = S_IRUSR | S_IWUSR,
 	},
 	.size = 0,
-	.read_new = qla2x00_sysfs_read_vpd,
-	.write_new = qla2x00_sysfs_write_vpd,
+	.read = qla2x00_sysfs_read_vpd,
+	.write = qla2x00_sysfs_write_vpd,
 };
 
 static ssize_t
@@ -685,7 +684,7 @@ static const struct bin_attribute sysfs_sfp_attr = {
 		.mode = S_IRUSR | S_IWUSR,
 	},
 	.size = SFP_DEV_SIZE,
-	.read_new = qla2x00_sysfs_read_sfp,
+	.read = qla2x00_sysfs_read_sfp,
 };
 
 static ssize_t
@@ -816,7 +815,9 @@ qla2x00_sysfs_write_reset(struct file *filp, struct kobject *kobj,
 			    "Unable to allocate memory for VPD information update.\n");
 			return -ENOMEM;
 		}
+		mutex_lock(&ha->optrom_mutex);
 		ha->isp_ops->get_flash_version(vha, tmp_data);
+		mutex_unlock(&ha->optrom_mutex);
 		vfree(tmp_data);
 		break;
 	}
@@ -829,7 +830,7 @@ static const struct bin_attribute sysfs_reset_attr = {
 		.mode = S_IWUSR,
 	},
 	.size = 0,
-	.write_new = qla2x00_sysfs_write_reset,
+	.write = qla2x00_sysfs_write_reset,
 };
 
 static ssize_t
@@ -872,7 +873,7 @@ static const struct bin_attribute sysfs_issue_logo_attr = {
 		.mode = S_IWUSR,
 	},
 	.size = 0,
-	.write_new = qla2x00_issue_logo,
+	.write = qla2x00_issue_logo,
 };
 
 static ssize_t
@@ -935,7 +936,7 @@ static const struct bin_attribute sysfs_xgmac_stats_attr = {
 		.mode = S_IRUSR,
 	},
 	.size = 0,
-	.read_new = qla2x00_sysfs_read_xgmac_stats,
+	.read = qla2x00_sysfs_read_xgmac_stats,
 };
 
 static ssize_t
@@ -993,7 +994,7 @@ static const struct bin_attribute sysfs_dcbx_tlv_attr = {
 		.mode = S_IRUSR,
 	},
 	.size = 0,
-	.read_new = qla2x00_sysfs_read_dcbx_tlv,
+	.read = qla2x00_sysfs_read_dcbx_tlv,
 };
 
 static struct sysfs_entry {
@@ -1660,10 +1661,8 @@ qla2x00_fw_state_show(struct device *dev, struct device_attribute *attr,
 	rval = qla2x00_get_firmware_state(vha, state);
 	mutex_unlock(&vha->hw->optrom_mutex);
 out:
-	if (rval != QLA_SUCCESS) {
+	if (rval != QLA_SUCCESS)
 		memset(state, -1, sizeof(state));
-		rval = qla2x00_get_firmware_state(vha, state);
-	}
 
 	return scnprintf(buf, PAGE_SIZE, "0x%x 0x%x 0x%x 0x%x 0x%x 0x%x\n",
 	    state[0], state[1], state[2], state[3], state[4], state[5]);

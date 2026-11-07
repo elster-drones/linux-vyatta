@@ -28,8 +28,8 @@ struct vgic_global kvm_vgic_global_state __ro_after_init = {
  *     kvm->arch.config_lock (mutex)
  *       its->cmd_lock (mutex)
  *         its->its_lock (mutex)
- *           vgic_cpu->ap_list_lock		must be taken with IRQs disabled
- *             vgic_dist->lpi_xa.xa_lock	must be taken with IRQs disabled
+ *           vgic_dist->lpi_xa.xa_lock		must be taken with IRQs disabled
+ *             vgic_cpu->ap_list_lock		must be taken with IRQs disabled
  *               vgic_irq->irq_lock		must be taken with IRQs disabled
  *
  * As the ap_list_lock might be taken from the timer interrupt handler,
@@ -71,7 +71,7 @@ static struct vgic_irq *vgic_get_lpi(struct kvm *kvm, u32 intid)
 	rcu_read_lock();
 
 	irq = xa_load(&dist->lpi_xa, intid);
-	if (!vgic_try_get_irq_kref(irq))
+	if (!vgic_try_get_irq_ref(irq))
 		irq = NULL;
 
 	rcu_read_unlock();
@@ -114,13 +114,24 @@ struct vgic_irq *vgic_get_vcpu_irq(struct kvm_vcpu *vcpu, u32 intid)
 	return vgic_get_irq(vcpu->kvm, intid);
 }
 
-/*
- * We can't do anything in here, because we lack the kvm pointer to
- * lock and remove the item from the lpi_list. So we keep this function
- * empty and use the return value of kref_put() to trigger the freeing.
- */
-static void vgic_irq_release(struct kref *ref)
+static void vgic_release_lpi_locked(struct vgic_dist *dist, struct vgic_irq *irq)
 {
+	lockdep_assert_held(&dist->lpi_xa.xa_lock);
+	__xa_erase(&dist->lpi_xa, irq->intid);
+	kfree_rcu(irq, rcu);
+}
+
+static __must_check bool __vgic_put_irq(struct kvm *kvm, struct vgic_irq *irq)
+{
+	if (irq->intid < VGIC_MIN_LPI)
+		return false;
+
+	return refcount_dec_and_test(&irq->refcount);
+}
+
+static __must_check bool vgic_put_irq_norelease(struct kvm *kvm, struct vgic_irq *irq)
+{
+	return __vgic_put_irq(kvm, irq);
 }
 
 void vgic_put_irq(struct kvm *kvm, struct vgic_irq *irq)
@@ -128,23 +139,46 @@ void vgic_put_irq(struct kvm *kvm, struct vgic_irq *irq)
 	struct vgic_dist *dist = &kvm->arch.vgic;
 	unsigned long flags;
 
+	/*
+	 * Normally the lock is only taken when the refcount drops to 0.
+	 * Acquire/release it early on lockdep kernels to make locking issues
+	 * in rare release paths a bit more obvious.
+	 */
+	if (IS_ENABLED(CONFIG_LOCKDEP) && irq->intid >= VGIC_MIN_LPI) {
+		guard(spinlock_irqsave)(&dist->lpi_xa.xa_lock);
+	}
+
 	if (irq->intid < VGIC_MIN_LPI)
 		return;
 
-	if (!kref_put(&irq->refcount, vgic_irq_release))
-		return;
+	if (refcount_dec_and_lock_irqsave(&irq->refcount,
+					  &dist->lpi_xa.xa_lock, &flags)) {
+		vgic_release_lpi_locked(dist, irq);
+		xa_unlock_irqrestore(&dist->lpi_xa, flags);
+	}
+}
+
+static void vgic_release_deleted_lpis(struct kvm *kvm)
+{
+	struct vgic_dist *dist = &kvm->arch.vgic;
+	unsigned long flags, intid;
+	struct vgic_irq *irq;
 
 	xa_lock_irqsave(&dist->lpi_xa, flags);
-	__xa_erase(&dist->lpi_xa, irq->intid);
-	xa_unlock_irqrestore(&dist->lpi_xa, flags);
 
-	kfree_rcu(irq, rcu);
+	xa_for_each(&dist->lpi_xa, intid, irq) {
+		if (!refcount_read(&irq->refcount))
+			vgic_release_lpi_locked(dist, irq);
+	}
+
+	xa_unlock_irqrestore(&dist->lpi_xa, flags);
 }
 
 void vgic_flush_pending_lpis(struct kvm_vcpu *vcpu)
 {
 	struct vgic_cpu *vgic_cpu = &vcpu->arch.vgic_cpu;
 	struct vgic_irq *irq, *tmp;
+	bool deleted = false;
 	unsigned long flags;
 
 	raw_spin_lock_irqsave(&vgic_cpu->ap_list_lock, flags);
@@ -152,14 +186,18 @@ void vgic_flush_pending_lpis(struct kvm_vcpu *vcpu)
 	list_for_each_entry_safe(irq, tmp, &vgic_cpu->ap_list_head, ap_list) {
 		if (irq->intid >= VGIC_MIN_LPI) {
 			raw_spin_lock(&irq->irq_lock);
+			irq->pending_latch = false;
 			list_del(&irq->ap_list);
 			irq->vcpu = NULL;
 			raw_spin_unlock(&irq->irq_lock);
-			vgic_put_irq(vcpu->kvm, irq);
+			deleted |= vgic_put_irq_norelease(vcpu->kvm, irq);
 		}
 	}
 
 	raw_spin_unlock_irqrestore(&vgic_cpu->ap_list_lock, flags);
+
+	if (deleted)
+		vgic_release_deleted_lpis(vcpu->kvm);
 }
 
 void vgic_irq_set_phys_pending(struct vgic_irq *irq, bool pending)
@@ -399,7 +437,7 @@ retry:
 	 * now in the ap_list. This is safe as the caller must already hold a
 	 * reference on the irq.
 	 */
-	vgic_get_irq_kref(irq);
+	vgic_get_irq_ref(irq);
 	list_add_tail(&irq->ap_list, &vcpu->arch.vgic_cpu.ap_list_head);
 	irq->vcpu = vcpu;
 
@@ -630,6 +668,7 @@ static void vgic_prune_ap_list(struct kvm_vcpu *vcpu)
 {
 	struct vgic_cpu *vgic_cpu = &vcpu->arch.vgic_cpu;
 	struct vgic_irq *irq, *tmp;
+	bool deleted_lpis = false;
 
 	DEBUG_SPINLOCK_BUG_ON(!irqs_disabled());
 
@@ -657,12 +696,12 @@ retry:
 
 			/*
 			 * This vgic_put_irq call matches the
-			 * vgic_get_irq_kref in vgic_queue_irq_unlock,
+			 * vgic_get_irq_ref in vgic_queue_irq_unlock,
 			 * where we added the LPI to the ap_list. As
 			 * we remove the irq from the list, we drop
 			 * also drop the refcount.
 			 */
-			vgic_put_irq(vcpu->kvm, irq);
+			deleted_lpis |= vgic_put_irq_norelease(vcpu->kvm, irq);
 			continue;
 		}
 
@@ -672,7 +711,11 @@ retry:
 			continue;
 		}
 
-		/* This interrupt looks like it has to be migrated. */
+		/*
+		 * This interrupt looks like it has to be migrated,
+		 * make sure it is kept alive while locks are dropped.
+		 */
+		vgic_get_irq_ref(irq);
 
 		raw_spin_unlock(&irq->irq_lock);
 		raw_spin_unlock(&vgic_cpu->ap_list_lock);
@@ -695,15 +738,16 @@ retry:
 		raw_spin_lock(&irq->irq_lock);
 
 		/*
-		 * If the affinity has been preserved, move the
-		 * interrupt around. Otherwise, it means things have
-		 * changed while the interrupt was unlocked, and we
-		 * need to replay this.
+		 * If the interrupt is still ours and its affinity has
+		 * been preserved, move it around. Otherwise, it means
+		 * things have changed while the interrupt was unlocked
+		 * (it may even have been taken off the list with its
+		 * affinity left untouched), and we need to replay this.
 		 *
 		 * In all cases, we cannot trust the list not to have
 		 * changed, so we restart from the beginning.
 		 */
-		if (target_vcpu == vgic_target_oracle(irq)) {
+		if (irq->vcpu == vcpu && target_vcpu == vgic_target_oracle(irq)) {
 			struct vgic_cpu *new_cpu = &target_vcpu->arch.vgic_cpu;
 
 			list_del(&irq->ap_list);
@@ -716,6 +760,8 @@ retry:
 		raw_spin_unlock(&vcpuB->arch.vgic_cpu.ap_list_lock);
 		raw_spin_unlock(&vcpuA->arch.vgic_cpu.ap_list_lock);
 
+		deleted_lpis |= vgic_put_irq_norelease(vcpu->kvm, irq);
+
 		if (target_vcpu_needs_kick) {
 			kvm_make_request(KVM_REQ_IRQ_PENDING, target_vcpu);
 			kvm_vcpu_kick(target_vcpu);
@@ -725,6 +771,9 @@ retry:
 	}
 
 	raw_spin_unlock(&vgic_cpu->ap_list_lock);
+
+	if (unlikely(deleted_lpis))
+		vgic_release_deleted_lpis(vcpu->kvm);
 }
 
 static inline void vgic_fold_lr_state(struct kvm_vcpu *vcpu)
@@ -818,7 +867,7 @@ static void vgic_flush_lr_state(struct kvm_vcpu *vcpu)
 		 * the AP list has been sorted already.
 		 */
 		if (multi_sgi && irq->priority > prio) {
-			_raw_spin_unlock(&irq->irq_lock);
+			raw_spin_unlock(&irq->irq_lock);
 			break;
 		}
 
@@ -872,6 +921,15 @@ void kvm_vgic_sync_hwstate(struct kvm_vcpu *vcpu)
 {
 	int used_lrs;
 
+	/* If nesting, emulate the HW effect from L0 to L1 */
+	if (vgic_state_is_nested(vcpu)) {
+		vgic_v3_sync_nested(vcpu);
+		return;
+	}
+
+	if (vcpu_has_nv(vcpu))
+		vgic_v3_nested_update_mi(vcpu);
+
 	/* An empty ap_list_head implies used_lrs == 0 */
 	if (list_empty(&vcpu->arch.vgic_cpu.ap_list_head))
 		return;
@@ -901,6 +959,35 @@ static inline void vgic_restore_state(struct kvm_vcpu *vcpu)
 void kvm_vgic_flush_hwstate(struct kvm_vcpu *vcpu)
 {
 	/*
+	 * If in a nested state, we must return early. Two possibilities:
+	 *
+	 * - If we have any pending IRQ for the guest and the guest
+	 *   expects IRQs to be handled in its virtual EL2 mode (the
+	 *   virtual IMO bit is set) and it is not already running in
+	 *   virtual EL2 mode, then we have to emulate an IRQ
+	 *   exception to virtual EL2.
+	 *
+	 *   We do that by placing a request to ourselves which will
+	 *   abort the entry procedure and inject the exception at the
+	 *   beginning of the run loop.
+	 *
+	 * - Otherwise, do exactly *NOTHING*. The guest state is
+	 *   already loaded, and we can carry on with running it.
+	 *
+	 * If we have NV, but are not in a nested state, compute the
+	 * maintenance interrupt state, as it may fire.
+	 */
+	if (vgic_state_is_nested(vcpu)) {
+		if (kvm_vgic_vcpu_pending_irq(vcpu))
+			kvm_make_request(KVM_REQ_GUEST_HYP_IRQ_PENDING, vcpu);
+
+		return;
+	}
+
+	if (vcpu_has_nv(vcpu))
+		vgic_v3_nested_update_mi(vcpu);
+
+	/*
 	 * If there are no virtual interrupts active or pending for this
 	 * VCPU, then there is no work to do and we can bail out without
 	 * taking any lock.  There is a potential race with someone injecting
@@ -913,7 +1000,7 @@ void kvm_vgic_flush_hwstate(struct kvm_vcpu *vcpu)
 	 * can be directly injected (GICv4).
 	 */
 	if (list_empty(&vcpu->arch.vgic_cpu.ap_list_head) &&
-	    !vgic_supports_direct_msis(vcpu->kvm))
+	    !vgic_supports_direct_irqs(vcpu->kvm))
 		return;
 
 	DEBUG_SPINLOCK_BUG_ON(!irqs_disabled());
@@ -927,7 +1014,7 @@ void kvm_vgic_flush_hwstate(struct kvm_vcpu *vcpu)
 	if (can_access_vgic_from_kernel())
 		vgic_restore_state(vcpu);
 
-	if (vgic_supports_direct_msis(vcpu->kvm))
+	if (vgic_supports_direct_irqs(vcpu->kvm))
 		vgic_v4_commit(vcpu);
 }
 

@@ -3,10 +3,12 @@
  include/uapi/linux/if_tun.h |   17 +++++++++++++++++
  2 files changed, 56 insertions(+), 4 deletions(-)
 
---- a/drivers/net/tun.c
-+++ b/drivers/net/tun.c
-@@ -100,7 +100,7 @@ static void tun_default_link_ksettings(s
- #define TUN_VNET_BE     0x40000000
+Index: elster-router-kernel/drivers/net/tun.c
+===================================================================
+--- elster-router-kernel.orig/drivers/net/tun.c
++++ elster-router-kernel/drivers/net/tun.c
+@@ -99,7 +99,7 @@ static void tun_default_link_ksettings(s
+ #define TUN_FASYNC	IFF_ATTACH_QUEUE
  
  #define TUN_FEATURES (IFF_NO_PI | IFF_ONE_QUEUE | IFF_VNET_HDR | \
 -		      IFF_MULTI_QUEUE | IFF_NAPI | IFF_NAPI_FRAGS)
@@ -14,7 +16,7 @@
  
  #define GOODCOPY_LEN 128
  
-@@ -1799,6 +1799,8 @@ static ssize_t tun_get_user(struct tun_s
+@@ -1755,6 +1755,8 @@ static ssize_t tun_get_user(struct tun_s
  	bool zerocopy = false;
  	int err;
  	u32 rxhash = 0;
@@ -23,8 +25,8 @@
  	int skb_xdp = 1;
  	bool frags = tun_napi_frags_enabled(tfile);
  	enum skb_drop_reason drop_reason = SKB_DROP_REASON_NOT_SPECIFIED;
-@@ -1831,6 +1833,15 @@ static ssize_t tun_get_user(struct tun_s
- 		iov_iter_advance(from, vnet_hdr_sz - sizeof(gso));
+@@ -1789,6 +1791,15 @@ static ssize_t tun_get_user(struct tun_s
+ 		len -= vnet_hdr_sz;
  	}
  
 +	if (tun->flags & IFF_META_HDR) {
@@ -38,8 +40,8 @@
 +
  	if ((tun->flags & TUN_TYPE_MASK) == IFF_TAP) {
  		align += NET_IP_ALIGN;
- 		if (unlikely(len < ETH_HLEN ||
-@@ -1914,6 +1925,14 @@ static ssize_t tun_get_user(struct tun_s
+ 		if (unlikely(len < ETH_HLEN || (hdr_len && hdr_len < ETH_HLEN)))
+@@ -1866,6 +1877,14 @@ static ssize_t tun_get_user(struct tun_s
  		goto free_skb;
  	}
  
@@ -54,7 +56,7 @@
  	switch (tun->flags & TUN_TYPE_MASK) {
  	case IFF_TUN:
  		if (tun->flags & IFF_NO_PI) {
-@@ -1933,13 +1952,12 @@ static ssize_t tun_get_user(struct tun_s
+@@ -1891,13 +1910,12 @@ static ssize_t tun_get_user(struct tun_s
  		}
  
  		if (pi.proto == htons(ETH_P_TEB)) {
@@ -69,8 +71,8 @@
 -		skb->dev = tun->dev;
  		break;
  	case IFF_TAP:
- 		if (frags && !pskb_may_pull(skb, ETH_HLEN)) {
-@@ -1959,6 +1977,9 @@ static ssize_t tun_get_user(struct tun_s
+ 		if (!pskb_may_pull(skb, ETH_HLEN)) {
+@@ -1917,6 +1935,9 @@ static ssize_t tun_get_user(struct tun_s
  		uarg->ops->complete(NULL, uarg, false);
  	}
  
@@ -80,8 +82,8 @@
  	skb_reset_network_header(skb);
  	skb_probe_transport_header(skb);
  	skb_record_rx_queue(skb, tfile->queue_index);
-@@ -2195,6 +2216,20 @@ static ssize_t tun_put_user(struct tun_s
- 		iov_iter_advance(iter, vnet_hdr_sz - sizeof(gso));
+@@ -2145,6 +2166,20 @@ static ssize_t tun_put_user(struct tun_s
+ 			return ret;
  	}
  
 +	if (tun->flags & IFF_META_HDR) {
@@ -101,8 +103,10 @@
  	if (vlan_hlen) {
  		int ret;
  		struct veth veth;
---- a/include/uapi/linux/if_tun.h
-+++ b/include/uapi/linux/if_tun.h
+Index: elster-router-kernel/include/uapi/linux/if_tun.h
+===================================================================
+--- elster-router-kernel.orig/include/uapi/linux/if_tun.h
++++ elster-router-kernel/include/uapi/linux/if_tun.h
 @@ -28,6 +28,9 @@
  #define TUN_TAP_DEV	IFF_TAP
  #define TUN_TYPE_MASK   0x000f
@@ -121,7 +125,7 @@
  #define IFF_NO_PI	0x1000
  /* This flag has no real effect */
  #define IFF_ONE_QUEUE	0x2000
-@@ -117,4 +121,17 @@ struct tun_filter {
+@@ -126,4 +130,17 @@ struct tun_filter {
  	__u8   addr[][ETH_ALEN];
  };
  

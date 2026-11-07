@@ -517,7 +517,8 @@ static int fsl_asrc_config_pair(struct fsl_asrc_pair *pair, bool use_ideal_rate)
 	regmap_update_bits(asrc->regmap, REG_ASRCTR,
 			   ASRCTR_ATSi_MASK(index), ASRCTR_ATS(index));
 	regmap_update_bits(asrc->regmap, REG_ASRCTR,
-			   ASRCTR_USRi_MASK(index), 0);
+			   ASRCTR_IDRi_MASK(index) | ASRCTR_USRi_MASK(index),
+			   ASRCTR_USR(index));
 
 	/* Set the input and output clock sources */
 	regmap_update_bits(asrc->regmap, REG_ASRCSR,
@@ -930,7 +931,7 @@ static bool fsl_asrc_writeable_reg(struct device *dev, unsigned int reg)
 	}
 }
 
-static struct reg_default fsl_asrc_reg[] = {
+static const struct reg_default fsl_asrc_reg[] = {
 	{ REG_ASRCTR, 0x0000 }, { REG_ASRIER, 0x0000 },
 	{ REG_ASRCNCR, 0x0000 }, { REG_ASRCFG, 0x0000 },
 	{ REG_ASRCSR, 0x0000 }, { REG_ASRCDR1, 0x0000 },
@@ -1387,7 +1388,7 @@ static int fsl_asrc_probe(struct platform_device *pdev)
 	ret = fsl_asrc_m2m_init(asrc);
 	if (ret) {
 		dev_err(&pdev->dev, "failed to init m2m device %d\n", ret);
-		return ret;
+		goto err_pm_get_sync;
 	}
 
 	return 0;

@@ -85,25 +85,6 @@ static inline struct kthread *to_kthread(struct task_struct *k)
 	return k->worker_private;
 }
 
-/*
- * Variant of to_kthread() that doesn't assume @p is a kthread.
- *
- * Per construction; when:
- *
- *   (p->flags & PF_KTHREAD) && p->worker_private
- *
- * the task is both a kthread and struct kthread is persistent. However
- * PF_KTHREAD on it's own is not, kernel_thread() can exec() (See umh.c and
- * begin_new_exec()).
- */
-static inline struct kthread *__to_kthread(struct task_struct *p)
-{
-	void *kthread = p->worker_private;
-	if (kthread && !(p->flags & PF_KTHREAD))
-		kthread = NULL;
-	return kthread;
-}
-
 void get_kthread_comm(char *buf, size_t buf_size, struct task_struct *tsk)
 {
 	struct kthread *kthread = to_kthread(tsk);
@@ -194,7 +175,7 @@ EXPORT_SYMBOL_GPL(kthread_should_park);
 
 bool kthread_should_stop_or_park(void)
 {
-	struct kthread *kthread = __to_kthread(current);
+	struct kthread *kthread = tsk_is_kthread(current);
 
 	if (!kthread)
 		return false;
@@ -235,7 +216,7 @@ EXPORT_SYMBOL_GPL(kthread_freezable_should_stop);
  */
 void *kthread_func(struct task_struct *task)
 {
-	struct kthread *kthread = __to_kthread(task);
+	struct kthread *kthread = tsk_is_kthread(task);
 	if (kthread)
 		return kthread->threadfn;
 	return NULL;
@@ -267,7 +248,7 @@ EXPORT_SYMBOL_GPL(kthread_data);
  */
 void *kthread_probe_data(struct task_struct *task)
 {
-	struct kthread *kthread = __to_kthread(task);
+	struct kthread *kthread = tsk_is_kthread(task);
 	void *data = NULL;
 
 	if (kthread)
@@ -310,19 +291,8 @@ void kthread_parkme(void)
 }
 EXPORT_SYMBOL_GPL(kthread_parkme);
 
-/**
- * kthread_exit - Cause the current kthread return @result to kthread_stop().
- * @result: The integer value to return to kthread_stop().
- *
- * While kthread_exit can be called directly, it exists so that
- * functions which do some additional work in non-modular code such as
- * module_put_and_kthread_exit can be implemented.
- *
- * Does not return.
- */
-void __noreturn kthread_exit(long result)
+void kthread_do_exit(struct kthread *kthread, long result)
 {
-	struct kthread *kthread = to_kthread(current);
 	kthread->result = result;
 	if (!list_empty(&kthread->hotplug_node)) {
 		mutex_lock(&kthreads_hotplug_lock);
@@ -334,9 +304,7 @@ void __noreturn kthread_exit(long result)
 			kthread->preferred_affinity = NULL;
 		}
 	}
-	do_exit(0);
 }
-EXPORT_SYMBOL(kthread_exit);
 
 /**
  * kthread_complete_and_exit - Exit the current kthread.
@@ -683,7 +651,7 @@ void kthread_set_per_cpu(struct task_struct *k, int cpu)
 
 bool kthread_is_per_cpu(struct task_struct *p)
 {
-	struct kthread *kthread = __to_kthread(p);
+	struct kthread *kthread = tsk_is_kthread(p);
 	if (!kthread)
 		return false;
 
@@ -894,6 +862,7 @@ out:
 
 	return ret;
 }
+EXPORT_SYMBOL_GPL(kthread_affine_preferred);
 
 /*
  * Re-affine kthreads according to their preferences
@@ -1207,7 +1176,8 @@ EXPORT_SYMBOL_GPL(kthread_queue_work);
  */
 void kthread_delayed_work_timer_fn(struct timer_list *t)
 {
-	struct kthread_delayed_work *dwork = from_timer(dwork, t, timer);
+	struct kthread_delayed_work *dwork = timer_container_of(dwork, t,
+								timer);
 	struct kthread_work *work = &dwork->work;
 	struct kthread_worker *worker = work->worker;
 	unsigned long flags;
@@ -1362,14 +1332,14 @@ static void kthread_cancel_delayed_work_timer(struct kthread_work *work,
 	struct kthread_worker *worker = work->worker;
 
 	/*
-	 * del_timer_sync() must be called to make sure that the timer
+	 * timer_delete_sync() must be called to make sure that the timer
 	 * callback is not running. The lock must be temporary released
 	 * to avoid a deadlock with the callback. In the meantime,
 	 * any queuing is blocked by setting the canceling counter.
 	 */
 	work->canceling++;
 	raw_spin_unlock_irqrestore(&worker->lock, *flags);
-	del_timer_sync(&dwork->timer);
+	timer_delete_sync(&dwork->timer);
 	raw_spin_lock_irqsave(&worker->lock, *flags);
 	work->canceling--;
 }

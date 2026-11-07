@@ -11,11 +11,11 @@
 
 #include <linux/kernel_stat.h>
 #include <linux/mmu_context.h>
+#include <linux/cpufeature.h>
 #include <linux/perf_event.h>
 #include <linux/signal.h>
 #include <linux/sched.h>
 #include <linux/sched/debug.h>
-#include <linux/jump_label.h>
 #include <linux/kernel.h>
 #include <linux/errno.h>
 #include <linux/string.h>
@@ -40,21 +40,10 @@
 #include <asm/ptrace.h>
 #include <asm/fault.h>
 #include <asm/diag.h>
-#include <asm/gmap.h>
 #include <asm/irq.h>
 #include <asm/facility.h>
 #include <asm/uv.h>
 #include "../kernel/entry.h"
-
-static DEFINE_STATIC_KEY_FALSE(have_store_indication);
-
-static int __init fault_init(void)
-{
-	if (test_facility(75))
-		static_branch_enable(&have_store_indication);
-	return 0;
-}
-early_initcall(fault_init);
 
 /*
  * Find out which address space caused the exception.
@@ -81,7 +70,7 @@ static __always_inline bool fault_is_write(struct pt_regs *regs)
 {
 	union teid teid = { .val = regs->int_parm_long };
 
-	if (static_branch_likely(&have_store_indication))
+	if (test_facility(75))
 		return teid.fsi == TEID_FSI_STORE;
 	return false;
 }
@@ -174,6 +163,23 @@ static void dump_fault_info(struct pt_regs *regs)
 }
 
 int show_unhandled_signals = 1;
+
+static const struct ctl_table s390_fault_sysctl_table[] = {
+	{
+		.procname	= "userprocess_debug",
+		.data		= &show_unhandled_signals,
+		.maxlen		= sizeof(int),
+		.mode		= 0644,
+		.proc_handler	= proc_dointvec,
+	},
+};
+
+static int __init init_s390_fault_sysctls(void)
+{
+	register_sysctl_init("kernel", s390_fault_sysctl_table);
+	return 0;
+}
+arch_initcall(init_s390_fault_sysctls);
 
 void report_user_fault(struct pt_regs *regs, long signr, int is_mm_fault)
 {
@@ -369,6 +375,7 @@ void do_protection_exception(struct pt_regs *regs)
 	if (unlikely(!teid.b61)) {
 		if (user_mode(regs)) {
 			/* Low-address protection in user mode: cannot happen */
+			dump_fault_info(regs);
 			die(regs, "Low-address protection");
 		}
 		/*
@@ -377,7 +384,7 @@ void do_protection_exception(struct pt_regs *regs)
 		 */
 		return handle_fault_error_nolock(regs, 0);
 	}
-	if (unlikely(MACHINE_HAS_NX && teid.b56)) {
+	if (unlikely(cpu_has_nx() && teid.b56)) {
 		regs->int_parm_long = (teid.addr * PAGE_SIZE) | (regs->psw.addr & PAGE_MASK);
 		return handle_fault_error_nolock(regs, SEGV_ACCERR);
 	}
@@ -397,9 +404,9 @@ void do_secure_storage_access(struct pt_regs *regs)
 {
 	union teid teid = { .val = regs->int_parm_long };
 	unsigned long addr = get_fault_address(regs);
+	struct mm_struct *mm = current->mm;
 	struct vm_area_struct *vma;
 	struct folio_walk fw;
-	struct mm_struct *mm;
 	struct folio *folio;
 	int rc;
 
@@ -426,15 +433,25 @@ void do_secure_storage_access(struct pt_regs *regs)
 		panic("Unexpected PGM 0x3d with TEID bit 61=0");
 	}
 	if (is_kernel_fault(regs)) {
-		folio = phys_to_folio(addr);
+		if (is_vmalloc_addr((void *)addr))
+			return handle_fault_error_nolock(regs, 0);
+		folio = virt_to_folio((void *)addr);
 		if (unlikely(!folio_try_get(folio)))
 			return;
-		rc = arch_make_folio_accessible(folio);
+		rc = uv_convert_from_secure(folio_to_phys(folio));
+		if (!rc)
+			clear_bit(PG_arch_1, &folio->flags.f);
 		folio_put(folio);
+		/*
+		 * There are some valid fixup types for kernel
+		 * accesses to donated secure memory. zeropad is one
+		 * of them.
+		 */
 		if (rc)
-			BUG();
+			return handle_fault_error_nolock(regs, 0);
 	} else {
-		mm = current->mm;
+		if (faulthandler_disabled() || !mm)
+			return handle_fault_error_nolock(regs, 0);
 		mmap_read_lock(mm);
 		vma = find_vma(mm, addr);
 		if (!vma)

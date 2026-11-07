@@ -68,6 +68,7 @@
 #include <asm/kasan.h>
 #include <asm/mce.h>
 #include <asm/systemcfg.h>
+#include <linux/kmsg_dump.h>
 
 #include "setup.h"
 
@@ -745,6 +746,13 @@ static int ppc_panic_fadump_handler(struct notifier_block *this,
 	hard_irq_disable();
 
 	/*
+	 * Invoke kmsg_dump (e.g., pstore) before crash_fadump() as fadump
+	 * runs before panic()'s kmsg_dump_desc() call.
+	 */
+	if (should_fadump_crash())
+		kmsg_dump_desc(KMSG_DUMP_PANIC, (char *)ptr);
+
+	/*
 	 * If firmware-assisted dump has been registered then trigger
 	 * its callback and let the firmware handles everything else.
 	 */
@@ -957,8 +965,6 @@ void __init setup_arch(char **cmdline_p)
 
 	/* Parse memory topology */
 	mem_topology_setup();
-	/* Set max_mapnr before paging_init() */
-	set_max_mapnr(max_pfn);
 	high_memory = (void *)__va(max_low_pfn * PAGE_SIZE);
 
 	/*

@@ -9,6 +9,8 @@
 #include <linux/acpi.h>
 #include <acpi/video.h>
 
+#include <drm/drm_print.h>
+
 #include "i915_utils.h"
 #include "intel_acpi.h"
 #include "intel_display_core.h"
@@ -94,6 +96,7 @@ static void intel_dsm_platform_mux_info(acpi_handle dhandle)
 
 	if (!pkg->package.count) {
 		DRM_DEBUG_DRIVER("no connection in _DSM\n");
+		ACPI_FREE(pkg);
 		return;
 	}
 

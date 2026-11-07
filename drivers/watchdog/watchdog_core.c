@@ -33,7 +33,8 @@
 #include <linux/init.h>		/* For __init/__exit/... */
 #include <linux/idr.h>		/* For ida_* macros */
 #include <linux/err.h>		/* For IS_ERR macros */
-#include <linux/of.h>		/* For of_get_timeout_sec */
+#include <linux/of.h>		/* For of_alias_get_id */
+#include <linux/property.h>	/* For device_property_read_u32 */
 #include <linux/suspend.h>
 
 #include "watchdog_core.h"	/* For watchdog_dev_register/... */
@@ -137,8 +138,7 @@ int watchdog_init_timeout(struct watchdog_device *wdd,
 	}
 
 	/* try to get the timeout_sec property */
-	if (dev && dev->of_node &&
-	    of_property_read_u32(dev->of_node, "timeout-sec", &t) == 0) {
+	if (dev && device_property_read_u32(dev, "timeout-sec", &t) == 0) {
 		if (t && !watchdog_timeout_invalid(wdd, t)) {
 			wdd->timeout = t;
 			return 0;
@@ -389,6 +389,9 @@ static void __watchdog_unregister_device(struct watchdog_device *wdd)
 
 	if (test_bit(WDOG_STOP_ON_REBOOT, &wdd->status))
 		unregister_reboot_notifier(&wdd->reboot_nb);
+
+	if (test_bit(WDOG_NO_PING_ON_SUSPEND, &wdd->status))
+		unregister_pm_notifier(&wdd->pm_nb);
 
 	watchdog_dev_unregister(wdd);
 	ida_free(&watchdog_ida, wdd->id);

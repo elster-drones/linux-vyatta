@@ -701,12 +701,11 @@ static int hx9023s_read_raw(struct iio_dev *indio_dev,
 
 	switch (mask) {
 	case IIO_CHAN_INFO_RAW:
-		ret = iio_device_claim_direct_mode(indio_dev);
-		if (ret)
-			return ret;
+		if (!iio_device_claim_direct(indio_dev))
+			return -EBUSY;
 
 		ret = hx9023s_get_proximity(data, chan, val);
-		iio_device_release_direct_mode(indio_dev);
+		iio_device_release_direct(indio_dev);
 		return ret;
 	case IIO_CHAN_INFO_SAMP_FREQ:
 		return hx9023s_get_samp_freq(data, val, val2);
@@ -719,6 +718,9 @@ static int hx9023s_set_samp_freq(struct hx9023s_data *data, int val, int val2)
 {
 	struct device *dev = regmap_get_device(data->regmap);
 	unsigned int i, period_ms;
+
+	if (!val && !val2)
+		return -EINVAL;
 
 	period_ms = div_u64(NANO, (val * MEGA + val2));
 
@@ -954,8 +956,8 @@ static irqreturn_t hx9023s_trigger_handler(int irq, void *private)
 		data->buffer.channels[i++] = cpu_to_le16(data->ch_data[index].diff);
 	}
 
-	iio_push_to_buffers_with_timestamp(indio_dev, &data->buffer,
-					   pf->timestamp);
+	iio_push_to_buffers_with_ts(indio_dev, &data->buffer,
+				    sizeof(data->buffer), pf->timestamp);
 
 out:
 	iio_trigger_notify_done(indio_dev->trig);
@@ -1035,12 +1037,12 @@ static int hx9023s_send_cfg(const struct firmware *fw, struct hx9023s_data *data
 	if (!bin)
 		return -ENOMEM;
 
-	memcpy(bin->data, fw->data, fw->size);
-	release_firmware(fw);
-
 	bin->fw_size = fw->size;
+	memcpy(bin->data, fw->data, bin->fw_size);
 	bin->fw_ver = bin->data[FW_VER_OFFSET];
 	bin->reg_count = get_unaligned_le16(bin->data + FW_REG_CNT_OFFSET);
+
+	release_firmware(fw);
 
 	return hx9023s_bin_load(data, bin);
 }
@@ -1141,8 +1143,7 @@ static int hx9023s_probe(struct i2c_client *client)
 						    indio_dev->name,
 						    iio_device_id(indio_dev));
 		if (!data->trig)
-			return dev_err_probe(dev, -ENOMEM,
-					     "iio trigger alloc failed\n");
+			return -ENOMEM;
 
 		data->trig->ops = &hx9023s_trigger_ops;
 		iio_trigger_set_drvdata(data->trig, indio_dev);
@@ -1190,13 +1191,13 @@ static DEFINE_SIMPLE_DEV_PM_OPS(hx9023s_pm_ops, hx9023s_suspend,
 
 static const struct of_device_id hx9023s_of_match[] = {
 	{ .compatible = "tyhx,hx9023s" },
-	{}
+	{ }
 };
 MODULE_DEVICE_TABLE(of, hx9023s_of_match);
 
 static const struct i2c_device_id hx9023s_id[] = {
 	{ "hx9023s" },
-	{}
+	{ }
 };
 MODULE_DEVICE_TABLE(i2c, hx9023s_id);
 

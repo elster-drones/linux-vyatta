@@ -1202,6 +1202,11 @@ _base_sas_ioc_info(struct MPT3SAS_ADAPTER *ioc, MPI2DefaultReply_t *mpi_reply,
 		    ioc->sge_size;
 		func_str = "nvme_encapsulated";
 		break;
+	case MPI2_FUNCTION_MCTP_PASSTHROUGH:
+		frame_sz = sizeof(Mpi26MctpPassthroughRequest_t) +
+		    ioc->sge_size;
+		func_str = "mctp_passthru";
+		break;
 	default:
 		frame_sz = 32;
 		func_str = "unknown";
@@ -1415,7 +1420,13 @@ _base_display_reply_info(struct MPT3SAS_ADAPTER *ioc, u16 smid, u8 msix_index,
 
 	if (ioc_status & MPI2_IOCSTATUS_FLAG_LOG_INFO_AVAILABLE) {
 		loginfo = le32_to_cpu(mpi_reply->IOCLogInfo);
-		_base_sas_log_info(ioc, loginfo);
+		if (ioc->logging_level & MPT_DEBUG_REPLY)
+			_base_sas_log_info(ioc, loginfo);
+		else {
+			if (!((ioc_status & MPI2_IOCSTATUS_MASK) &
+			MPI2_IOCSTATUS_CONFIG_INVALID_PAGE))
+				_base_sas_log_info(ioc, loginfo);
+		}
 	}
 
 	if (ioc_status || loginfo) {
@@ -3227,7 +3238,10 @@ _base_assign_reply_queues(struct MPT3SAS_ADAPTER *ioc)
 		 * corresponding to high iops queues.
 		 */
 		if (ioc->high_iops_queues) {
-			mask = cpumask_of_node(dev_to_node(&ioc->pdev->dev));
+			int node = dev_to_node(&ioc->pdev->dev);
+
+			mask = (node == NUMA_NO_NODE) ?
+				cpu_online_mask : cpumask_of_node(node);
 			for (index = 0; index < ioc->high_iops_queues;
 			    index++) {
 				irq = pci_irq_vector(ioc->pdev, index);
@@ -4874,6 +4888,12 @@ _base_display_ioc_capabilities(struct MPT3SAS_ADAPTER *ioc)
 		i++;
 	}
 
+	if (ioc->facts.IOCCapabilities &
+	    MPI26_IOCFACTS_CAPABILITY_MCTP_PASSTHRU) {
+		pr_cont("%sMCTP Passthru", i ? "," : "");
+		i++;
+	}
+
 	iounit_pg1_flags = le32_to_cpu(ioc->iounit_pg1.Flags);
 	if (!(iounit_pg1_flags & MPI2_IOUNITPAGE1_NATIVE_COMMAND_Q_DISABLE)) {
 		pr_cont("%sNCQ", i ? "," : "");
@@ -5854,6 +5874,8 @@ _base_release_memory_pools(struct MPT3SAS_ADAPTER *ioc)
 
 	if (ioc->pcie_sgl_dma_pool) {
 		for (i = 0; i < ioc->scsiio_depth; i++) {
+			if (!ioc->pcie_sg_lookup[i].pcie_sgl)
+				continue;
 			dma_pool_free(ioc->pcie_sgl_dma_pool,
 					ioc->pcie_sg_lookup[i].pcie_sgl,
 					ioc->pcie_sg_lookup[i].pcie_sgl_dma);
@@ -8018,7 +8040,7 @@ _base_diag_reset(struct MPT3SAS_ADAPTER *ioc)
 
 	mutex_lock(&ioc->hostdiag_unlock_mutex);
 	if (mpt3sas_base_unlock_and_get_host_diagnostic(ioc, &host_diagnostic))
-		goto out;
+		goto unlock;
 
 	hcb_size = ioc->base_readl(&ioc->chip->HCBSize);
 	drsprintk(ioc, ioc_info(ioc, "diag reset: issued\n"));
@@ -8038,7 +8060,7 @@ _base_diag_reset(struct MPT3SAS_ADAPTER *ioc)
 			ioc_info(ioc,
 			    "Invalid host diagnostic register value\n");
 			_base_dump_reg_set(ioc);
-			goto out;
+			goto unlock;
 		}
 		if (!(host_diagnostic & MPI2_DIAG_RESET_ADAPTER))
 			break;
@@ -8074,17 +8096,19 @@ _base_diag_reset(struct MPT3SAS_ADAPTER *ioc)
 		ioc_err(ioc, "%s: failed going to ready state (ioc_state=0x%x)\n",
 			__func__, ioc_state);
 		_base_dump_reg_set(ioc);
-		goto out;
+		goto fail;
 	}
 
 	pci_cfg_access_unlock(ioc->pdev);
 	ioc_info(ioc, "diag reset: SUCCESS\n");
 	return 0;
 
- out:
+unlock:
+	mutex_unlock(&ioc->hostdiag_unlock_mutex);
+
+fail:
 	pci_cfg_access_unlock(ioc->pdev);
 	ioc_err(ioc, "diag reset: FAILED\n");
-	mutex_unlock(&ioc->hostdiag_unlock_mutex);
 	return -EFAULT;
 }
 

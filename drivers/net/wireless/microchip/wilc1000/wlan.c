@@ -1197,6 +1197,15 @@ static void wilc_wlan_handle_isr_ext(struct wilc *wilc, u32 int_status)
 	if (size <= 0)
 		return;
 
+	/* A size exceeding the RX buffer is bogus; drop the transfer
+	 * instead of overflowing the buffer.
+	 */
+	if (size > WILC_RX_BUFF_SIZE) {
+		wilc->hif_func->hif_clear_int_ext(wilc,
+						  DATA_INT_CLR | ENABLE_RX_VMM);
+		return;
+	}
+
 	if (WILC_RX_BUFF_SIZE - offset < size)
 		offset = 0;
 
@@ -1265,7 +1274,7 @@ int wilc_wlan_firmware_download(struct wilc *wilc, const u8 *buffer,
 
 	ret = acquire_bus(wilc, WILC_BUS_ACQUIRE_AND_WAKEUP);
 	if (ret)
-		return ret;
+		goto fail;
 
 	wilc->hif_func->hif_read_reg(wilc, WILC_GLB_RESET_0, &reg);
 	reg &= ~BIT(10);
@@ -1287,10 +1296,7 @@ int wilc_wlan_firmware_download(struct wilc *wilc, const u8 *buffer,
 
 		offset += 8;
 		while (((int)size) && (offset < buffer_size)) {
-			if (size <= blksz)
-				size2 = size;
-			else
-				size2 = blksz;
+			size2 = min(size, blksz);
 
 			memcpy(dma_buffer, &buffer[offset], size2);
 			ret = wilc->hif_func->hif_block_tx(wilc, addr,

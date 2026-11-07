@@ -488,6 +488,7 @@ void svc_xprt_enqueue(struct svc_xprt *xprt)
 	pool = svc_pool_for_cpu(xprt->xpt_server);
 
 	percpu_counter_inc(&pool->sp_sockets_queued);
+	xprt->xpt_qtime = ktime_get();
 	lwq_enqueue(&xprt->xpt_ready, &pool->sp_xprts);
 
 	svc_pool_wake_idle_thread(pool);
@@ -651,18 +652,10 @@ static void svc_check_conn_limits(struct svc_serv *serv)
 
 static bool svc_alloc_arg(struct svc_rqst *rqstp)
 {
-	struct svc_serv *serv = rqstp->rq_server;
 	struct xdr_buf *arg = &rqstp->rq_arg;
 	unsigned long pages, filled, ret;
 
-	pages = (serv->sv_max_mesg + 2 * PAGE_SIZE) >> PAGE_SHIFT;
-	if (pages > RPCSVC_MAXPAGES) {
-		pr_warn_once("svc: warning: pages=%lu > RPCSVC_MAXPAGES=%lu\n",
-			     pages, RPCSVC_MAXPAGES);
-		/* use as many pages as possible */
-		pages = RPCSVC_MAXPAGES;
-	}
-
+	pages = rqstp->rq_maxpages;
 	for (filled = 0; filled < pages; filled = ret) {
 		ret = alloc_pages_bulk(GFP_KERNEL, pages, rqstp->rq_pages);
 		if (ret > filled)
@@ -790,8 +783,8 @@ static void svc_handle_xprt(struct svc_rqst *rqstp, struct svc_xprt *xprt)
 		newxpt = xprt->xpt_ops->xpo_accept(xprt);
 		if (newxpt) {
 			newxpt->xpt_cred = get_cred(xprt->xpt_cred);
-			svc_add_new_temp_xprt(serv, newxpt);
 			trace_svc_xprt_accept(newxpt, serv->sv_name);
+			svc_add_new_temp_xprt(serv, newxpt);
 		} else {
 			module_put(xprt->xpt_class->xcl_owner);
 		}
@@ -929,7 +922,7 @@ void svc_send(struct svc_rqst *rqstp)
  */
 static void svc_age_temp_xprts(struct timer_list *t)
 {
-	struct svc_serv *serv = from_timer(serv, t, sv_temptimer);
+	struct svc_serv *serv = timer_container_of(serv, t, sv_temptimer);
 	struct svc_xprt *xprt;
 	struct list_head *le, *next;
 
@@ -1021,6 +1014,19 @@ static void svc_delete_xprt(struct svc_xprt *xprt)
 	struct svc_serv	*serv = xprt->xpt_server;
 	struct svc_deferred_req *dr;
 
+	/* unregister with rpcbind for when transport type is TCP or UDP.
+	 */
+	if (test_bit(XPT_RPCB_UNREG, &xprt->xpt_flags)) {
+		struct svc_sock *svsk = container_of(xprt, struct svc_sock,
+						     sk_xprt);
+		struct socket *sock = svsk->sk_sock;
+
+		if (svc_register(serv, xprt->xpt_net, sock->sk->sk_family,
+				 sock->sk->sk_protocol, 0) < 0)
+			pr_warn("failed to unregister %s with rpcbind\n",
+				xprt->xpt_class->xcl_name);
+	}
+
 	if (test_and_set_bit(XPT_DEAD, &xprt->xpt_flags))
 		return;
 
@@ -1109,6 +1115,7 @@ static void svc_clean_up_xprts(struct svc_serv *serv, struct net *net)
  * svc_xprt_destroy_all - Destroy transports associated with @serv
  * @serv: RPC service to be shut down
  * @net: target network namespace
+ * @unregister: true if it is OK to unregister the destroyed xprts
  *
  * Server threads may still be running (especially in the case where the
  * service is still running in other network namespaces).
@@ -1121,7 +1128,8 @@ static void svc_clean_up_xprts(struct svc_serv *serv, struct net *net)
  * threads, we may need to wait a little while and then check again to
  * see if they're done.
  */
-void svc_xprt_destroy_all(struct svc_serv *serv, struct net *net)
+void svc_xprt_destroy_all(struct svc_serv *serv, struct net *net,
+			  bool unregister)
 {
 	int delay = 0;
 
@@ -1131,6 +1139,9 @@ void svc_xprt_destroy_all(struct svc_serv *serv, struct net *net)
 		svc_clean_up_xprts(serv, net);
 		msleep(delay++);
 	}
+
+	if (unregister)
+		svc_rpcb_cleanup(serv, net);
 }
 EXPORT_SYMBOL_GPL(svc_xprt_destroy_all);
 
@@ -1162,13 +1173,8 @@ static void svc_revisit(struct cache_deferred_req *dreq, int too_many)
 }
 
 /*
- * Save the request off for later processing. The request buffer looks
- * like this:
- *
- * <xprt-header><rpc-header><rpc-pagelist><rpc-tail>
- *
- * This code can only handle requests that consist of an xprt-header
- * and rpc-header.
+ * Save the request off for later processing. Only a Call that fits
+ * entirely in rq_arg.head[0] can be deferred.
  */
 static struct cache_deferred_req *svc_defer(struct cache_req *req)
 {
@@ -1181,8 +1187,11 @@ static struct cache_deferred_req *svc_defer(struct cache_req *req)
 		dr = rqstp->rq_deferred;
 		rqstp->rq_deferred = NULL;
 	} else {
-		size_t skip;
 		size_t size;
+
+		if (rqstp->rq_arg.len > rqstp->rq_arg.head[0].iov_len)
+			return NULL;
+
 		/* FIXME maybe discard if size too large */
 		size = sizeof(struct svc_deferred_req) + rqstp->rq_arg.len;
 		dr = kmalloc(size, GFP_KERNEL);
@@ -1196,9 +1205,7 @@ static struct cache_deferred_req *svc_defer(struct cache_req *req)
 		dr->daddr = rqstp->rq_daddr;
 		dr->argslen = rqstp->rq_arg.len >> 2;
 
-		/* back up head to the start of the buffer and copy */
-		skip = rqstp->rq_arg.len - rqstp->rq_arg.head[0].iov_len;
-		memcpy(dr->args, rqstp->rq_arg.head[0].iov_base - skip,
+		memcpy(dr->args, rqstp->rq_arg.head[0].iov_base,
 		       dr->argslen << 2);
 	}
 	dr->xprt_ctxt = rqstp->rq_xprt_ctxt;
@@ -1221,17 +1228,13 @@ static noinline int svc_deferred_recv(struct svc_rqst *rqstp)
 
 	trace_svc_defer_recv(dr);
 
-	/* setup iov_base past transport header */
 	rqstp->rq_arg.head[0].iov_base = dr->args;
-	/* The iov_len does not include the transport header bytes */
 	rqstp->rq_arg.head[0].iov_len = dr->argslen << 2;
 	rqstp->rq_arg.page_len = 0;
-	/* The rq_arg.len includes the transport header bytes */
 	rqstp->rq_arg.len     = dr->argslen << 2;
 	rqstp->rq_prot        = dr->prot;
 	memcpy(&rqstp->rq_addr, &dr->addr, dr->addrlen);
 	rqstp->rq_addrlen     = dr->addrlen;
-	/* Save off transport header len in case we get deferred again */
 	rqstp->rq_daddr       = dr->daddr;
 	rqstp->rq_respages    = rqstp->rq_pages;
 	rqstp->rq_xprt_ctxt   = dr->xprt_ctxt;

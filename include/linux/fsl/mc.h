@@ -178,9 +178,6 @@ struct fsl_mc_obj_desc {
  * @regions: pointer to array of MMIO region entries
  * @irqs: pointer to array of pointers to interrupts allocated to this device
  * @resource: generic resource associated with this MC object device, if any.
- * @driver_override: driver name to force a match; do not set directly,
- *                   because core frees it; use driver_set_override() to
- *                   set or clear it.
  *
  * Generic device object for MC object devices that are "attached" to a
  * MC bus.
@@ -214,7 +211,6 @@ struct fsl_mc_device {
 	struct fsl_mc_device_irq **irqs;
 	struct fsl_mc_resource *resource;
 	struct device_link *consumer_link;
-	const char *driver_override;
 };
 
 #define to_fsl_mc_device(_dev) \
@@ -416,8 +412,6 @@ int __must_check fsl_mc_portal_allocate(struct fsl_mc_device *mc_dev,
 					struct fsl_mc_io **new_mc_io);
 
 void fsl_mc_portal_free(struct fsl_mc_io *mc_io);
-
-int fsl_mc_portal_reset(struct fsl_mc_io *mc_io);
 
 int __must_check fsl_mc_object_allocate(struct fsl_mc_device *mc_dev,
 					enum fsl_mc_pool_type pool_type,

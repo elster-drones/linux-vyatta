@@ -30,6 +30,7 @@
 #include <linux/skbuff.h>
 #include <linux/crc32.h>
 #include <linux/ethtool.h>
+#include <linux/if_vlan.h>
 #include <linux/mii.h>
 #include <linux/bitops.h>
 #include <linux/of.h>
@@ -457,7 +458,7 @@ static inline u32 emac_iff2rmr(struct net_device *ndev)
 
 	if (emac_has_feature(dev, EMAC_APM821XX_REQ_JUMBO_FRAME_SIZE)) {
 		r &= ~EMAC4_RMR_MJS_MASK;
-		r |= EMAC4_RMR_MJS(ndev->mtu);
+		r |= EMAC4_RMR_MJS(ndev->mtu + VLAN_HLEN);
 	}
 
 	return r;
@@ -2554,15 +2555,10 @@ static int emac_dt_mdio_probe(struct emac_instance *dev)
 	struct mii_bus *bus;
 	int res;
 
-	mii_np = of_get_child_by_name(dev->ofdev->dev.of_node, "mdio");
+	mii_np = of_get_available_child_by_name(dev->ofdev->dev.of_node, "mdio");
 	if (!mii_np) {
 		dev_err(&dev->ofdev->dev, "no mdio definition found.");
 		return -ENODEV;
-	}
-
-	if (!of_device_is_available(mii_np)) {
-		res = -ENODEV;
-		goto put_node;
 	}
 
 	bus = devm_mdiobus_alloc(&dev->ofdev->dev);
@@ -3040,8 +3036,19 @@ static int emac_probe(struct platform_device *ofdev)
 	if (err)
 		goto err_gone;
 
+	dev->emacp = devm_platform_ioremap_resource(ofdev, 0);
+	if (IS_ERR(dev->emacp)) {
+		err = PTR_ERR(dev->emacp);
+		goto err_gone;
+	}
+
 	/* Setup error IRQ handler */
 	dev->emac_irq = platform_get_irq(ofdev, 0);
+	if (dev->emac_irq < 0) {
+		err = dev->emac_irq;
+		goto err_gone;
+	}
+
 	err = devm_request_irq(&ofdev->dev, dev->emac_irq, emac_irq, 0, "EMAC",
 			       dev);
 	if (err) {
@@ -3051,13 +3058,6 @@ static int emac_probe(struct platform_device *ofdev)
 	}
 
 	ndev->irq = dev->emac_irq;
-
-	dev->emacp = devm_platform_ioremap_resource(ofdev, 0);
-	if (IS_ERR(dev->emacp)) {
-		dev_err(&ofdev->dev, "can't map device registers");
-		err = PTR_ERR(dev->emacp);
-		goto err_gone;
-	}
 
 	/* Wait for dependent devices */
 	err = emac_wait_deps(dev);
@@ -3149,7 +3149,7 @@ static int emac_probe(struct platform_device *ofdev)
 
 	netif_carrier_off(ndev);
 
-	err = devm_register_netdev(&ofdev->dev, ndev);
+	err = register_netdev(ndev);
 	if (err) {
 		printk(KERN_ERR "%pOF: failed to register net device (%d)!\n",
 		       np, err);
@@ -3201,6 +3201,13 @@ static void emac_remove(struct platform_device *ofdev)
 	struct emac_instance *dev = platform_get_drvdata(ofdev);
 
 	DBG(dev, "remove" NL);
+
+	/* Unregister network device before tearing down hardware
+	 * to prevent use-after-free during deferred cleanup. This ensures
+	 * the network stack stops all operations before hardware resources
+	 * are released.
+	 */
+	unregister_netdev(dev->ndev);
 
 	cancel_work_sync(&dev->reset_work);
 

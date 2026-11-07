@@ -60,30 +60,34 @@ list_lru_from_memcg_idx(struct list_lru *lru, int nid, int idx)
 	return &lru->node[nid].lru;
 }
 
+static inline bool lock_list_lru(struct list_lru_one *l, bool irq)
+{
+	if (irq)
+		spin_lock_irq(&l->lock);
+	else
+		spin_lock(&l->lock);
+	if (unlikely(READ_ONCE(l->nr_items) == LONG_MIN)) {
+		if (irq)
+			spin_unlock_irq(&l->lock);
+		else
+			spin_unlock(&l->lock);
+		return false;
+	}
+	return true;
+}
+
 static inline struct list_lru_one *
 lock_list_lru_of_memcg(struct list_lru *lru, int nid, struct mem_cgroup *memcg,
 		       bool irq, bool skip_empty)
 {
 	struct list_lru_one *l;
-	long nr_items;
 
 	rcu_read_lock();
 again:
 	l = list_lru_from_memcg_idx(lru, nid, memcg_kmem_id(memcg));
-	if (likely(l)) {
-		if (irq)
-			spin_lock_irq(&l->lock);
-		else
-			spin_lock(&l->lock);
-		nr_items = READ_ONCE(l->nr_items);
-		if (likely(nr_items != LONG_MIN)) {
-			rcu_read_unlock();
-			return l;
-		}
-		if (irq)
-			spin_unlock_irq(&l->lock);
-		else
-			spin_unlock(&l->lock);
+	if (likely(l) && lock_list_lru(l, irq)) {
+		rcu_read_unlock();
+		return l;
 	}
 	/*
 	 * Caller may simply bail out if raced with reparenting or
@@ -468,25 +472,28 @@ void memcg_reparent_list_lrus(struct mem_cgroup *memcg, struct mem_cgroup *paren
 	mutex_lock(&list_lrus_mutex);
 	list_for_each_entry(lru, &memcg_list_lrus, list) {
 		struct list_lru_memcg *mlru;
-		XA_STATE(xas, &lru->xa, memcg->kmemcg_id);
 
 		/*
-		 * Lock the Xarray to ensure no on going list_lru_memcg
-		 * allocation and further allocation will see css_is_dying().
+		 * css_is_dying() check in memcg_list_lru_alloc() avoids
+		 * allocating a new mlru since CSS_DYING is already set for this
+		 * memcg a rcu grace period ago.
 		 */
-		xas_lock_irq(&xas);
-		mlru = xas_store(&xas, NULL);
-		xas_unlock_irq(&xas);
+		mlru = xa_load(&lru->xa, memcg->kmemcg_id);
 		if (!mlru)
 			continue;
 
 		/*
-		 * With Xarray value set to NULL, holding the lru lock below
-		 * prevents list_lru_{add,del,isolate} from touching the lru,
-		 * safe to reparent.
+		 * Reparent each per-node list and mark the child dead
+		 * (LONG_MIN) before clearing xarray entry otherwise a
+		 * concurrent list_lru_del() may corrupt the list if it arrives
+		 * after xarray clear but before reparenting as
+		 * lock_list_lru_of_memcg will acquire parent's lock while the
+		 * item is still on child's list.
 		 */
 		for_each_node(i)
 			memcg_reparent_list_lru_one(lru, i, &mlru->node[i], parent);
+
+		xa_erase_irq(&lru->xa, memcg->kmemcg_id);
 
 		/*
 		 * Here all list_lrus corresponding to the cgroup are guaranteed
@@ -510,7 +517,7 @@ int memcg_list_lru_alloc(struct mem_cgroup *memcg, struct list_lru *lru,
 			 gfp_t gfp)
 {
 	unsigned long flags;
-	struct list_lru_memcg *mlru;
+	struct list_lru_memcg *mlru = NULL;
 	struct mem_cgroup *pos, *parent;
 	XA_STATE(xas, &lru->xa, 0);
 
@@ -535,9 +542,11 @@ int memcg_list_lru_alloc(struct mem_cgroup *memcg, struct list_lru *lru,
 			parent = parent_mem_cgroup(pos);
 		}
 
-		mlru = memcg_init_list_lru_one(lru, gfp);
-		if (!mlru)
-			return -ENOMEM;
+		if (!mlru) {
+			mlru = memcg_init_list_lru_one(lru, gfp);
+			if (!mlru)
+				return -ENOMEM;
+		}
 		xas_set(&xas, pos->kmemcg_id);
 		do {
 			xas_lock_irqsave(&xas, flags);
@@ -548,9 +557,10 @@ int memcg_list_lru_alloc(struct mem_cgroup *memcg, struct list_lru *lru,
 			}
 			xas_unlock_irqrestore(&xas, flags);
 		} while (xas_nomem(&xas, gfp));
-		if (mlru)
-			kfree(mlru);
 	} while (pos != memcg && !css_is_dying(&pos->css));
+
+	if (unlikely(mlru))
+		kfree(mlru);
 
 	return xas_error(&xas);
 }

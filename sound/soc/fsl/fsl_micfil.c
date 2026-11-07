@@ -19,6 +19,7 @@
 #include <linux/dma/imx-dma.h>
 #include <sound/dmaengine_pcm.h>
 #include <sound/pcm.h>
+#include <sound/pcm_params.h>
 #include <sound/soc.h>
 #include <sound/tlv.h>
 #include <sound/core.h>
@@ -78,6 +79,7 @@ struct fsl_micfil {
 	struct fsl_micfil_verid verid;
 	struct fsl_micfil_param param;
 	bool mclk_flag;  /* mclk enable flag */
+	bool dec_bypass;
 };
 
 struct fsl_micfil_soc_data {
@@ -129,7 +131,7 @@ static struct fsl_micfil_soc_data fsl_micfil_imx943 = {
 	.fifos = 8,
 	.fifo_depth = 32,
 	.dataline =  0xf,
-	.formats = SNDRV_PCM_FMTBIT_S32_LE,
+	.formats = SNDRV_PCM_FMTBIT_S32_LE | SNDRV_PCM_FMTBIT_DSD_U32_LE,
 	.use_edma = true,
 	.use_verid = true,
 	.volume_sx = false,
@@ -208,10 +210,34 @@ static int micfil_quality_set(struct snd_kcontrol *kcontrol,
 {
 	struct snd_soc_component *cmpnt = snd_soc_kcontrol_component(kcontrol);
 	struct fsl_micfil *micfil = snd_soc_component_get_drvdata(cmpnt);
+	int val = ucontrol->value.integer.value[0];
+	bool change = false;
+	int old_val;
+	int ret;
 
-	micfil->quality = ucontrol->value.integer.value[0];
+	if (val < QUALITY_HIGH || val > QUALITY_VLOW2)
+		return -EINVAL;
 
-	return micfil_set_quality(micfil);
+	if (micfil->quality != val) {
+		ret = pm_runtime_resume_and_get(cmpnt->dev);
+		if (ret)
+			return ret;
+
+		old_val = micfil->quality;
+		micfil->quality = val;
+		ret = micfil_set_quality(micfil);
+
+		pm_runtime_put_autosuspend(cmpnt->dev);
+
+		if (ret) {
+			micfil->quality = old_val;
+			return ret;
+		}
+
+		change = true;
+	}
+
+	return change;
 }
 
 static const char * const micfil_hwvad_enable[] = {
@@ -270,6 +296,10 @@ static int micfil_put_dc_remover_state(struct snd_kcontrol *kcontrol,
 	if (val < 0 || val > 3)
 		return -EINVAL;
 
+	ret = pm_runtime_resume_and_get(comp->dev);
+	if (ret)
+		return ret;
+
 	micfil->dc_remover = val;
 
 	/* Calculate total value for all channels */
@@ -279,10 +309,10 @@ static int micfil_put_dc_remover_state(struct snd_kcontrol *kcontrol,
 	/* Update DC Remover mode for all channels */
 	ret = snd_soc_component_update_bits(comp, REG_MICFIL_DC_CTRL,
 					    MICFIL_DC_CTRL_CONFIG, reg_val);
-	if (ret < 0)
-		return ret;
 
-	return 0;
+	pm_runtime_put_autosuspend(comp->dev);
+
+	return ret;
 }
 
 static int micfil_get_dc_remover_state(struct snd_kcontrol *kcontrol,
@@ -304,10 +334,15 @@ static int hwvad_put_enable(struct snd_kcontrol *kcontrol,
 	unsigned int *item = ucontrol->value.enumerated.item;
 	struct fsl_micfil *micfil = snd_soc_component_get_drvdata(comp);
 	int val = snd_soc_enum_item_to_val(e, item[0]);
+	bool change = false;
 
+	if (val < 0 || val > 1)
+		return -EINVAL;
+
+	change = (micfil->vad_enabled != val);
 	micfil->vad_enabled = val;
 
-	return 0;
+	return change;
 }
 
 static int hwvad_get_enable(struct snd_kcontrol *kcontrol,
@@ -329,13 +364,18 @@ static int hwvad_put_init_mode(struct snd_kcontrol *kcontrol,
 	unsigned int *item = ucontrol->value.enumerated.item;
 	struct fsl_micfil *micfil = snd_soc_component_get_drvdata(comp);
 	int val = snd_soc_enum_item_to_val(e, item[0]);
+	bool change = false;
+
+	if (val < MICFIL_HWVAD_ENVELOPE_MODE || val > MICFIL_HWVAD_ENERGY_MODE)
+		return -EINVAL;
 
 	/* 0 - Envelope-based Mode
 	 * 1 - Energy-based Mode
 	 */
+	change = (micfil->vad_init_mode != val);
 	micfil->vad_init_mode = val;
 
-	return 0;
+	return change;
 }
 
 static int hwvad_get_init_mode(struct snd_kcontrol *kcontrol,
@@ -422,7 +462,13 @@ static const struct snd_kcontrol_new fsl_micfil_snd_controls[] = {
 	SOC_SINGLE("HWVAD ZCD Adjustment", REG_MICFIL_VAD0_ZCD, 8, 15, 0),
 	SOC_SINGLE("HWVAD ZCD And Behavior Switch",
 		   REG_MICFIL_VAD0_ZCD, 4, 1, 0),
-	SOC_SINGLE_BOOL_EXT("VAD Detected", 0, hwvad_detected, NULL),
+	{
+		.iface = SNDRV_CTL_ELEM_IFACE_MIXER,
+		.access = SNDRV_CTL_ELEM_ACCESS_READ | SNDRV_CTL_ELEM_ACCESS_VOLATILE,
+		.name = "VAD Detected",
+		.info = snd_soc_info_bool_ext,
+		.get = hwvad_detected,
+	},
 };
 
 static int fsl_micfil_use_verid(struct device *dev)
@@ -724,14 +770,14 @@ static int fsl_micfil_trigger(struct snd_pcm_substream *substream, int cmd,
 		if (ret)
 			return ret;
 
-		if (micfil->vad_enabled)
+		if (micfil->vad_enabled && !micfil->dec_bypass)
 			fsl_micfil_hwvad_enable(micfil);
 
 		break;
 	case SNDRV_PCM_TRIGGER_STOP:
 	case SNDRV_PCM_TRIGGER_SUSPEND:
 	case SNDRV_PCM_TRIGGER_PAUSE_PUSH:
-		if (micfil->vad_enabled)
+		if (micfil->vad_enabled && !micfil->dec_bypass)
 			fsl_micfil_hwvad_disable(micfil);
 
 		/* Disable the module */
@@ -762,12 +808,17 @@ static int fsl_micfil_reparent_rootclk(struct fsl_micfil *micfil, unsigned int s
 	/* Get root clock */
 	clk = micfil->mclk;
 
-	/* Disable clock first, for it was enabled by pm_runtime */
+	/* Reparent root clock to the PLL matching this sample rate */
 	fsl_asoc_reparent_pll_clocks(dev, clk, micfil->pll8k_clk,
 				     micfil->pll11k_clk, ratio);
-	ret = clk_prepare_enable(clk);
-	if (ret)
-		return ret;
+
+	/* Enable only once; hw_params can be called multiple times */
+	if (!micfil->mclk_flag) {
+		ret = clk_prepare_enable(clk);
+		if (ret)
+			return ret;
+		micfil->mclk_flag = true;
+	}
 
 	return 0;
 }
@@ -778,8 +829,9 @@ static int fsl_micfil_hw_params(struct snd_pcm_substream *substream,
 {
 	struct fsl_micfil *micfil = snd_soc_dai_get_drvdata(dai);
 	unsigned int channels = params_channels(params);
+	snd_pcm_format_t format = params_format(params);
 	unsigned int rate = params_rate(params);
-	int clk_div = 8;
+	int clk_div = 8, mclk_rate, div_multiply_k;
 	int osr = MICFIL_OSR_DEFAULT;
 	int ret;
 
@@ -799,15 +851,49 @@ static int fsl_micfil_hw_params(struct snd_pcm_substream *substream,
 	if (ret)
 		return ret;
 
-	micfil->mclk_flag = true;
+	/* floor(K * CLKDIV) */
+	switch (micfil->quality) {
+	case QUALITY_HIGH:
+		div_multiply_k = clk_div >> 1;
+		break;
+	case QUALITY_LOW:
+	case QUALITY_VLOW1:
+		div_multiply_k = clk_div << 1;
+		break;
+	case QUALITY_VLOW2:
+		div_multiply_k = clk_div << 2;
+		break;
+	case QUALITY_MEDIUM:
+	case QUALITY_VLOW0:
+	default:
+		div_multiply_k = clk_div;
+		break;
+	}
 
-	ret = clk_set_rate(micfil->mclk, rate * clk_div * osr * 8);
+	if (format == SNDRV_PCM_FORMAT_DSD_U32_LE) {
+		micfil->dec_bypass = true;
+		/*
+		 * According to equation 29 in RM:
+		 * MCLK_CLK_ROOT = PDM CLK rate * 2 * floor(K * CLKDIV)
+		 * PDM CLK rate = rate * physical bit width (32)
+		 */
+		mclk_rate = rate * div_multiply_k * 32 * 2;
+	} else {
+		micfil->dec_bypass = false;
+		mclk_rate = rate * clk_div * osr * 8;
+	}
+
+	ret = clk_set_rate(micfil->mclk, mclk_rate);
 	if (ret)
 		return ret;
 
 	ret = micfil_set_quality(micfil);
 	if (ret)
 		return ret;
+
+	regmap_update_bits(micfil->regmap, REG_MICFIL_CTRL2,
+			   MICFIL_CTRL2_DEC_BYPASS,
+			   micfil->dec_bypass ? MICFIL_CTRL2_DEC_BYPASS : 0);
 
 	ret = regmap_update_bits(micfil->regmap, REG_MICFIL_CTRL2,
 				 MICFIL_CTRL2_CLKDIV | MICFIL_CTRL2_CICOSR,
@@ -840,8 +926,10 @@ static int fsl_micfil_hw_free(struct snd_pcm_substream *substream,
 {
 	struct fsl_micfil *micfil = snd_soc_dai_get_drvdata(dai);
 
-	clk_disable_unprepare(micfil->mclk);
-	micfil->mclk_flag = false;
+	if (micfil->mclk_flag) {
+		clk_disable_unprepare(micfil->mclk);
+		micfil->mclk_flag = false;
+	}
 
 	return 0;
 }
@@ -1473,11 +1561,8 @@ static int fsl_micfil_runtime_resume(struct device *dev)
 }
 
 static const struct dev_pm_ops fsl_micfil_pm_ops = {
-	SET_RUNTIME_PM_OPS(fsl_micfil_runtime_suspend,
-			   fsl_micfil_runtime_resume,
-			   NULL)
-	SET_SYSTEM_SLEEP_PM_OPS(pm_runtime_force_suspend,
-				pm_runtime_force_resume)
+	RUNTIME_PM_OPS(fsl_micfil_runtime_suspend, fsl_micfil_runtime_resume, NULL)
+	SYSTEM_SLEEP_PM_OPS(pm_runtime_force_suspend, pm_runtime_force_resume)
 };
 
 static struct platform_driver fsl_micfil_driver = {
@@ -1485,7 +1570,7 @@ static struct platform_driver fsl_micfil_driver = {
 	.remove = fsl_micfil_remove,
 	.driver = {
 		.name = "fsl-micfil-dai",
-		.pm = &fsl_micfil_pm_ops,
+		.pm = pm_ptr(&fsl_micfil_pm_ops),
 		.of_match_table = fsl_micfil_dt_ids,
 	},
 };

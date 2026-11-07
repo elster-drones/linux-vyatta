@@ -116,7 +116,7 @@ struct intel_tpmi_info {
 	struct intel_vsec_device *vsec_dev;
 	int feature_count;
 	u64 pfs_start;
-	struct intel_tpmi_plat_info plat_info;
+	struct oobmsm_plat_info plat_info;
 	void __iomem *tpmi_control_mem;
 	struct dentry *dbgfs_dir;
 };
@@ -187,7 +187,7 @@ struct tpmi_feature_state {
 /* Used during auxbus device creation */
 static DEFINE_IDA(intel_vsec_tpmi_ida);
 
-struct intel_tpmi_plat_info *tpmi_get_platform_data(struct auxiliary_device *auxdev)
+struct oobmsm_plat_info *tpmi_get_platform_data(struct auxiliary_device *auxdev)
 {
 	struct intel_vsec_device *vsec_dev = auxdev_to_ivdev(auxdev);
 
@@ -530,7 +530,7 @@ static const struct file_operations mem_write_ops = {
 	.release        = single_release,
 };
 
-#define tpmi_to_dev(info)	(&info->vsec_dev->pcidev->dev)
+#define tpmi_to_dev(info)	((info)->vsec_dev->dev)
 
 static void tpmi_dbgfs_register(struct intel_tpmi_info *tpmi_info)
 {
@@ -642,7 +642,7 @@ static int tpmi_create_device(struct intel_tpmi_info *tpmi_info,
 		tmp->flags = IORESOURCE_MEM;
 	}
 
-	feature_vsec_dev->pcidev = vsec_dev->pcidev;
+	feature_vsec_dev->dev = vsec_dev->dev;
 	feature_vsec_dev->resource = res;
 	feature_vsec_dev->num_resources = pfs->pfs_header.num_entries;
 	feature_vsec_dev->priv_data = &tpmi_info->plat_info;
@@ -655,7 +655,7 @@ static int tpmi_create_device(struct intel_tpmi_info *tpmi_info,
 	 * feature_vsec_dev and res memory are also freed as part of
 	 * device deletion.
 	 */
-	return intel_vsec_add_aux(vsec_dev->pcidev, &vsec_dev->auxdev.dev,
+	return intel_vsec_add_aux(&vsec_dev->auxdev.dev,
 				  feature_vsec_dev, feature_id_name);
 }
 
@@ -742,7 +742,7 @@ static int tpmi_fetch_pfs_header(struct intel_tpmi_pm_feature *pfs, u64 start, i
 static int intel_vsec_tpmi_init(struct auxiliary_device *auxdev)
 {
 	struct intel_vsec_device *vsec_dev = auxdev_to_ivdev(auxdev);
-	struct pci_dev *pci_dev = vsec_dev->pcidev;
+	struct pci_dev *pci_dev = to_pci_dev(vsec_dev->dev);
 	struct intel_tpmi_info *tpmi_info;
 	u64 pfs_start = 0;
 	int ret, i;
@@ -799,6 +799,10 @@ static int intel_vsec_tpmi_init(struct auxiliary_device *auxdev)
 			ret = tpmi_process_info(tpmi_info, pfs);
 			if (ret)
 				return ret;
+
+			ret = intel_vsec_set_mapping(&tpmi_info->plat_info, vsec_dev);
+			if (ret)
+				return ret;
 		}
 
 		if (pfs->pfs_header.tpmi_id == TPMI_CONTROL_ID)
@@ -809,10 +813,6 @@ static int intel_vsec_tpmi_init(struct auxiliary_device *auxdev)
 
 	auxiliary_set_drvdata(auxdev, tpmi_info);
 
-	ret = tpmi_create_devices(tpmi_info);
-	if (ret)
-		return ret;
-
 	/*
 	 * Allow debugfs when security policy allows. Everything this debugfs
 	 * interface provides, can also be done via /dev/mem access. If
@@ -821,6 +821,12 @@ static int intel_vsec_tpmi_init(struct auxiliary_device *auxdev)
 	 */
 	if (!security_locked_down(LOCKDOWN_DEV_MEM) && capable(CAP_SYS_RAWIO))
 		tpmi_dbgfs_register(tpmi_info);
+
+	ret = tpmi_create_devices(tpmi_info);
+	if (ret) {
+		debugfs_remove_recursive(tpmi_info->dbgfs_dir);
+		return ret;
+	}
 
 	return 0;
 }

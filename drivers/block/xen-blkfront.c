@@ -493,11 +493,11 @@ static void blkif_restart_queue_callback(void *arg)
 	schedule_work(&rinfo->work);
 }
 
-static int blkif_getgeo(struct block_device *bd, struct hd_geometry *hg)
+static int blkif_getgeo(struct gendisk *disk, struct hd_geometry *hg)
 {
 	/* We don't have real geometry info, but let's at least return
 	   values consistent with the size of the device */
-	sector_t nsect = get_capacity(bd->bd_disk);
+	sector_t nsect = get_capacity(disk);
 	sector_t cylinders = nsect;
 
 	hg->heads = 0xff;
@@ -751,7 +751,7 @@ static int blkif_queue_rw_req(struct request *req, struct blkfront_ring_info *ri
 	id = blkif_ring_get_request(rinfo, req, &final_ring_req);
 	ring_req = &rinfo->shadow[id].req;
 
-	num_sg = blk_rq_map_sg(req->q, req, rinfo->shadow[id].sg);
+	num_sg = blk_rq_map_sg(req, rinfo->shadow[id].sg);
 	num_grant = 0;
 	/* Calculate the number of grant used */
 	for_each_sg(rinfo->shadow[id].sg, sg, num_sg, i)
@@ -1211,6 +1211,14 @@ static void blkif_free_ring(struct blkfront_ring_info *rinfo)
 	int i, j, segs;
 
 	/*
+	 * Interrupt teardown must be done ahead of freeing queue-related
+	 * data, otherwise the interrupt handler can race with the cleanup.
+	 */
+	if (rinfo->irq)
+		unbind_from_irqhandler(rinfo->irq, rinfo);
+	rinfo->evtchn = rinfo->irq = 0;
+
+	/*
 	 * Remove indirect pages, this only happens when using indirect
 	 * descriptors but not persistent grants
 	 */
@@ -1292,10 +1300,6 @@ free_shadow:
 	/* Free resources associated with old device channel. */
 	xenbus_teardown_ring((void **)&rinfo->ring.sring, info->nr_ring_pages,
 			     rinfo->ring_ref);
-
-	if (rinfo->irq)
-		unbind_from_irqhandler(rinfo->irq, rinfo);
-	rinfo->evtchn = rinfo->irq = 0;
 }
 
 static void blkif_free(struct blkfront_info *info, int suspend)

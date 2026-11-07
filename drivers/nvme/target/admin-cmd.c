@@ -63,14 +63,9 @@ static void nvmet_execute_create_sq(struct nvmet_req *req)
 	if (status != NVME_SC_SUCCESS)
 		goto complete;
 
-	/*
-	 * Note: The NVMe specification allows multiple SQs to use the same CQ.
-	 * However, the target code does not really support that. So for now,
-	 * prevent this and fail the command if sqid and cqid are different.
-	 */
-	if (!cqid || cqid != sqid) {
-		pr_err("SQ %u: Unsupported CQID %u\n", sqid, cqid);
-		status = NVME_SC_CQ_INVALID | NVME_STATUS_DNR;
+	status = nvmet_check_io_cqid(ctrl, cqid, false);
+	if (status != NVME_SC_SUCCESS) {
+		pr_err("SQ %u: Invalid CQID %u\n", sqid, cqid);
 		goto complete;
 	}
 
@@ -79,7 +74,7 @@ static void nvmet_execute_create_sq(struct nvmet_req *req)
 		goto complete;
 	}
 
-	status = ctrl->ops->create_sq(ctrl, sqid, sq_flags, qsize, prp1);
+	status = ctrl->ops->create_sq(ctrl, sqid, cqid, sq_flags, qsize, prp1);
 
 complete:
 	nvmet_req_complete(req, status);
@@ -96,14 +91,15 @@ static void nvmet_execute_delete_cq(struct nvmet_req *req)
 		goto complete;
 	}
 
-	if (!cqid) {
+	status = nvmet_check_io_cqid(ctrl, cqid, false);
+	if (status != NVME_SC_SUCCESS)
+		goto complete;
+
+	if (!ctrl->cqs[cqid] || nvmet_cq_in_use(ctrl->cqs[cqid])) {
+		/* Some SQs are still using this CQ */
 		status = NVME_SC_QID_INVALID | NVME_STATUS_DNR;
 		goto complete;
 	}
-
-	status = nvmet_check_cqid(ctrl, cqid);
-	if (status != NVME_SC_SUCCESS)
-		goto complete;
 
 	status = ctrl->ops->delete_cq(ctrl, cqid);
 
@@ -127,12 +123,7 @@ static void nvmet_execute_create_cq(struct nvmet_req *req)
 		goto complete;
 	}
 
-	if (!cqid) {
-		status = NVME_SC_QID_INVALID | NVME_STATUS_DNR;
-		goto complete;
-	}
-
-	status = nvmet_check_cqid(ctrl, cqid);
+	status = nvmet_check_io_cqid(ctrl, cqid, true);
 	if (status != NVME_SC_SUCCESS)
 		goto complete;
 
@@ -318,8 +309,10 @@ static void nvmet_execute_get_log_page_rmi(struct nvmet_req *req)
 	}
 
 	log = kzalloc(sizeof(*log), GFP_KERNEL);
-	if (!log)
+	if (!log) {
+		status = NVME_SC_INTERNAL;
 		goto out;
+	}
 
 	log->endgid = req->cmd->get_log_page.lsi;
 	disk = req->ns->bdev->bd_disk;
@@ -972,7 +965,7 @@ static void nvmet_execute_identify_nslist(struct nvmet_req *req, bool match_css)
 	nvmet_for_each_enabled_ns(&ctrl->subsys->namespaces, idx, ns) {
 		if (ns->nsid <= min_nsid)
 			continue;
-		if (match_css && req->ns->csi != req->cmd->identify.csi)
+		if (match_css && ns->csi != req->cmd->identify.csi)
 			continue;
 		list[i++] = cpu_to_le32(ns->nsid);
 		if (i == buf_size / sizeof(__le32))
@@ -1174,7 +1167,7 @@ static void nvmet_execute_identify(struct nvmet_req *req)
  * A "minimum viable" abort implementation: the command is mandatory in the
  * spec, but we are not required to do any useful work.  We couldn't really
  * do a useful abort, so don't bother even with waiting for the command
- * to be exectuted and return immediately telling the command to abort
+ * to be executed and return immediately telling the command to abort
  * wasn't found.
  */
 static void nvmet_execute_abort(struct nvmet_req *req)
@@ -1347,7 +1340,7 @@ static u16 nvmet_set_feat_arbitration(struct nvmet_req *req)
 
 void nvmet_execute_set_features(struct nvmet_req *req)
 {
-	struct nvmet_subsys *subsys = nvmet_req_subsys(req);
+	struct nvmet_ctrl *ctrl = nvmet_req_ctrl(req);
 	u32 cdw10 = le32_to_cpu(req->cmd->common.cdw10);
 	u32 cdw11 = le32_to_cpu(req->cmd->common.cdw11);
 	u16 status = 0;
@@ -1369,7 +1362,7 @@ void nvmet_execute_set_features(struct nvmet_req *req)
 			break;
 		}
 		nvmet_set_result(req,
-			(subsys->max_qid - 1) | ((subsys->max_qid - 1) << 16));
+			(ctrl->max_qid - 1) | ((ctrl->max_qid - 1) << 16));
 		break;
 	case NVME_FEAT_IRQ_COALESCE:
 		status = nvmet_set_feat_irq_coalesce(req);
@@ -1506,7 +1499,7 @@ void nvmet_get_feat_async_event(struct nvmet_req *req)
 
 void nvmet_execute_get_features(struct nvmet_req *req)
 {
-	struct nvmet_subsys *subsys = nvmet_req_subsys(req);
+	struct nvmet_ctrl *ctrl = nvmet_req_ctrl(req);
 	u32 cdw10 = le32_to_cpu(req->cmd->common.cdw10);
 	u16 status = 0;
 
@@ -1546,7 +1539,7 @@ void nvmet_execute_get_features(struct nvmet_req *req)
 		break;
 	case NVME_FEAT_NUM_QUEUES:
 		nvmet_set_result(req,
-			(subsys->max_qid-1) | ((subsys->max_qid-1) << 16));
+			(ctrl->max_qid-1) | ((ctrl->max_qid-1) << 16));
 		break;
 	case NVME_FEAT_KATO:
 		nvmet_get_feat_kato(req);
@@ -1595,7 +1588,7 @@ void nvmet_execute_async_event(struct nvmet_req *req)
 	ctrl->async_event_cmds[ctrl->nr_async_event_cmds++] = req;
 	mutex_unlock(&ctrl->lock);
 
-	queue_work(nvmet_wq, &ctrl->async_event_work);
+	queue_work(nvmet_aen_wq, &ctrl->async_event_work);
 }
 
 void nvmet_execute_keep_alive(struct nvmet_req *req)

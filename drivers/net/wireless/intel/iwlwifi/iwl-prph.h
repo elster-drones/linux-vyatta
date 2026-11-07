@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0 OR BSD-3-Clause */
 /*
- * Copyright (C) 2005-2014, 2018-2024 Intel Corporation
+ * Copyright (C) 2005-2014, 2018-2026 Intel Corporation
  * Copyright (C) 2013-2015 Intel Mobile Communications GmbH
  * Copyright (C) 2016 Intel Deutschland GmbH
  */
@@ -411,6 +411,11 @@ enum {
 #define HPM_SECONDARY_DEVICE_STATE      0xa03404
 #define WFPM_MAC_OTP_CFG7_ADDR		0xa03338
 #define WFPM_MAC_OTP_CFG7_DATA		0xa0333c
+#define WFPM_RSRCS_4PHS_REQ_STTS	0xa033f8
+#define WFPM_RSRCS_4PHS_ACK_STTS	0xa033fc
+
+#define RSRC_REQ_CNVR_TOP BIT(6)
+#define RSRC_ACK_CNVR_TOP BIT(6)
 
 
 /* For UMAG_GEN_HW_STATUS reg check */
@@ -514,6 +519,14 @@ enum {
 #define WMAL_INDRCT_CMD(addr) \
 	((WMAL_CMD_READ_BURST_ACCESS << WMAL_INDRCT_RD_CMD1_OPMOD_POS) | \
 	 ((addr) & WMAL_INDRCT_RD_CMD1_BYTE_ADDRESS_MSK))
+#define WMAL_MRSPF_STTS 0xADFC24
+#define WMAL_MRSPF_STTS_FIFO1_NOT_EMPTY_POS 15
+#define WMAL_MRSPF_STTS_FIFO1_NOT_EMPTY_MSK 0x8000
+#define WMAL_TIMEOUT_VAL 0xA5A5A5A2
+#define WMAL_MRSPF_STTS_IS_FIFO1_NOT_EMPTY(val) \
+	(((val) >> (WMAL_MRSPF_STTS_FIFO1_NOT_EMPTY_POS)) & \
+	 ((WMAL_MRSPF_STTS_FIFO1_NOT_EMPTY_MSK) >> \
+	  (WMAL_MRSPF_STTS_FIFO1_NOT_EMPTY_POS)))
 
 #define WFPM_LMAC1_PS_CTL_RW 0xA03380
 #define WFPM_LMAC2_PS_CTL_RW 0xA033C0

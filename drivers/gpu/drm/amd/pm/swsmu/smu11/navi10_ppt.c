@@ -2393,22 +2393,26 @@ static int navi10_get_power_limit(struct smu_context *smu,
 		(struct smu_11_0_powerplay_table *)smu->smu_table.power_play_table;
 	struct smu_11_0_overdrive_table *od_settings = smu->od_settings;
 	PPTable_t *pptable = smu->smu_table.driver_pptable;
-	uint32_t power_limit, od_percent_upper = 0, od_percent_lower = 0;
+	uint32_t current_limit, default_limit;
+	uint32_t od_percent_upper = 0, od_percent_lower = 0;
 
-	if (smu_v11_0_get_current_power_limit(smu, &power_limit)) {
-		/* the last hope to figure out the ppt limit */
-		if (!pptable) {
-			dev_err(smu->adev->dev, "Cannot get PPT limit due to pptable missing!");
-			return -EINVAL;
-		}
-		power_limit =
-			pptable->SocketPowerLimitAc[PPT_THROTTLER_PPT0];
+	if (!pptable) {
+		dev_err(smu->adev->dev,
+			"Cannot get PPT limit due to pptable missing!");
+		return -EINVAL;
 	}
 
+	default_limit = smu->adev->pm.ac_power ?
+		pptable->SocketPowerLimitAc[PPT_THROTTLER_PPT0] :
+		pptable->SocketPowerLimitDc[PPT_THROTTLER_PPT0];
+
+	if (smu_v11_0_get_current_power_limit(smu, &current_limit))
+		current_limit = default_limit;
+
 	if (current_power_limit)
-		*current_power_limit = power_limit;
+		*current_power_limit = current_limit;
 	if (default_power_limit)
-		*default_power_limit = power_limit;
+		*default_power_limit = default_limit;
 
 	if (powerplay_table) {
 		if (smu->od_enabled &&
@@ -2422,15 +2426,15 @@ static int navi10_get_power_limit(struct smu_context *smu,
 	}
 
 	dev_dbg(smu->adev->dev, "od percent upper:%d, od percent lower:%d (default power: %d)\n",
-					od_percent_upper, od_percent_lower, power_limit);
+		 od_percent_upper, od_percent_lower, default_limit);
 
 	if (max_power_limit) {
-		*max_power_limit = power_limit * (100 + od_percent_upper);
+		*max_power_limit = default_limit * (100 + od_percent_upper);
 		*max_power_limit /= 100;
 	}
 
 	if (min_power_limit) {
-		*min_power_limit = power_limit * (100 - od_percent_lower);
+		*min_power_limit = default_limit * (100 - od_percent_lower);
 		*min_power_limit /= 100;
 	}
 
@@ -2444,7 +2448,8 @@ static int navi10_update_pcie_parameters(struct smu_context *smu,
 	struct smu_11_0_dpm_context *dpm_context = smu->smu_dpm.dpm_context;
 	PPTable_t *pptable = smu->smu_table.driver_pptable;
 	uint32_t smu_pcie_arg;
-	int ret, i;
+	int ret = 0;
+	int i;
 
 	/* lclk dpm table setup */
 	for (i = 0; i < MAX_PCIE_CONF; i++) {
@@ -2453,25 +2458,24 @@ static int navi10_update_pcie_parameters(struct smu_context *smu,
 	}
 
 	for (i = 0; i < NUM_LINK_LEVELS; i++) {
-		smu_pcie_arg = (i << 16) |
-			((pptable->PcieGenSpeed[i] <= pcie_gen_cap) ? (pptable->PcieGenSpeed[i] << 8) :
-				(pcie_gen_cap << 8)) | ((pptable->PcieLaneCount[i] <= pcie_width_cap) ?
-					pptable->PcieLaneCount[i] : pcie_width_cap);
+		dpm_context->dpm_tables.pcie_table.pcie_gen[i] =
+			pptable->PcieGenSpeed[i] > pcie_gen_cap ?
+			pcie_gen_cap : pptable->PcieGenSpeed[i];
+		dpm_context->dpm_tables.pcie_table.pcie_lane[i] =
+			pptable->PcieLaneCount[i] > pcie_width_cap ?
+			pcie_width_cap : pptable->PcieLaneCount[i];
+		smu_pcie_arg = i << 16;
+		smu_pcie_arg |= dpm_context->dpm_tables.pcie_table.pcie_gen[i] << 8;
+		smu_pcie_arg |= dpm_context->dpm_tables.pcie_table.pcie_lane[i];
 		ret = smu_cmn_send_smc_msg_with_param(smu,
-					  SMU_MSG_OverridePcieParameters,
-					  smu_pcie_arg,
-					  NULL);
-
+						      SMU_MSG_OverridePcieParameters,
+						      smu_pcie_arg,
+						      NULL);
 		if (ret)
 			return ret;
-
-		if (pptable->PcieGenSpeed[i] > pcie_gen_cap)
-			dpm_context->dpm_tables.pcie_table.pcie_gen[i] = pcie_gen_cap;
-		if (pptable->PcieLaneCount[i] > pcie_width_cap)
-			dpm_context->dpm_tables.pcie_table.pcie_lane[i] = pcie_width_cap;
 	}
 
-	return 0;
+	return ret;
 }
 
 static inline void navi10_dump_od_table(struct smu_context *smu,
@@ -3142,10 +3146,10 @@ static int navi10_i2c_control_init(struct smu_context *smu)
 		control->quirks = &navi10_i2c_control_quirks;
 		i2c_set_adapdata(control, smu_i2c);
 
-		res = i2c_add_adapter(control);
+		res = devm_i2c_add_adapter(adev->dev, control);
 		if (res) {
 			DRM_ERROR("Failed to register hw i2c, err: %d\n", res);
-			goto Out_err;
+			return res;
 		}
 	}
 
@@ -3153,27 +3157,12 @@ static int navi10_i2c_control_init(struct smu_context *smu)
 	adev->pm.fru_eeprom_i2c_bus = &adev->pm.smu_i2c[1].adapter;
 
 	return 0;
-Out_err:
-	for ( ; i >= 0; i--) {
-		struct amdgpu_smu_i2c_bus *smu_i2c = &adev->pm.smu_i2c[i];
-		struct i2c_adapter *control = &smu_i2c->adapter;
-
-		i2c_del_adapter(control);
-	}
-	return res;
 }
 
 static void navi10_i2c_control_fini(struct smu_context *smu)
 {
 	struct amdgpu_device *adev = smu->adev;
-	int i;
 
-	for (i = 0; i < MAX_SMU_I2C_BUSES; i++) {
-		struct amdgpu_smu_i2c_bus *smu_i2c = &adev->pm.smu_i2c[i];
-		struct i2c_adapter *control = &smu_i2c->adapter;
-
-		i2c_del_adapter(control);
-	}
 	adev->pm.ras_eeprom_i2c_bus = NULL;
 	adev->pm.fru_eeprom_i2c_bus = NULL;
 }

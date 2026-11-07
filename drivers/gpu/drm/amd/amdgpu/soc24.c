@@ -26,7 +26,6 @@
 #include <linux/pci.h>
 
 #include "amdgpu.h"
-#include "amdgpu_atombios.h"
 #include "amdgpu_ih.h"
 #include "amdgpu_uvd.h"
 #include "amdgpu_vce.h"
@@ -527,12 +526,40 @@ static int soc24_common_suspend(struct amdgpu_ip_block *ip_block)
 	return soc24_common_hw_fini(ip_block);
 }
 
+static bool soc24_need_reset_on_resume(struct amdgpu_device *adev)
+{
+	u32 sol_reg1, sol_reg2;
+
+	/* Will reset for the following suspend abort cases.
+	 * 1) Only reset dGPU side.
+	 * 2) S3 suspend got aborted and TOS is active.
+	 *    As for dGPU suspend abort cases the SOL value
+	 *    will be kept as zero at this resume point.
+	 */
+	if (!(adev->flags & AMD_IS_APU) && adev->in_s3) {
+		sol_reg1 = RREG32_SOC15(MP0, 0, regMPASP_SMN_C2PMSG_81);
+		msleep(100);
+		sol_reg2 = RREG32_SOC15(MP0, 0, regMPASP_SMN_C2PMSG_81);
+
+		return (sol_reg1 != sol_reg2);
+	}
+
+	return false;
+}
+
 static int soc24_common_resume(struct amdgpu_ip_block *ip_block)
 {
+	struct amdgpu_device *adev = ip_block->adev;
+
+	if (soc24_need_reset_on_resume(adev)) {
+		dev_info(adev->dev, "S3 suspend aborted, resetting...");
+		soc24_asic_reset(adev);
+	}
+
 	return soc24_common_hw_init(ip_block);
 }
 
-static bool soc24_common_is_idle(void *handle)
+static bool soc24_common_is_idle(struct amdgpu_ip_block *ip_block)
 {
 	return true;
 }
@@ -575,9 +602,9 @@ static int soc24_common_set_powergating_state(struct amdgpu_ip_block *ip_block,
 	return 0;
 }
 
-static void soc24_common_get_clockgating_state(void *handle, u64 *flags)
+static void soc24_common_get_clockgating_state(struct amdgpu_ip_block *ip_block, u64 *flags)
 {
-	struct amdgpu_device *adev = (struct amdgpu_device *)handle;
+	struct amdgpu_device *adev = ip_block->adev;
 
 	adev->nbio.funcs->get_clockgating_state(adev, flags);
 

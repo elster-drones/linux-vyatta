@@ -19,6 +19,7 @@
 #include <linux/sched/signal.h>
 #include <linux/slab.h>
 #include <linux/spinlock.h>
+#include <linux/time_namespace.h>
 #include <uapi/linux/ntsync.h>
 
 #define NTSYNC_NAME	"ntsync"
@@ -845,6 +846,8 @@ static int ntsync_schedule(const struct ntsync_q *q, const struct ntsync_wait_ar
 
 	if (args->flags & NTSYNC_WAIT_REALTIME)
 		clock = CLOCK_REALTIME;
+	else
+		timeout = timens_ktime_to_host(clock, timeout);
 
 	do {
 		if (signal_pending(current)) {
@@ -873,6 +876,7 @@ static int setup_wait(struct ntsync_device *dev,
 {
 	int fds[NTSYNC_MAX_WAIT_COUNT + 1];
 	const __u32 count = args->count;
+	size_t size = array_size(count, sizeof(fds[0]));
 	struct ntsync_q *q;
 	__u32 total_count;
 	__u32 i, j;
@@ -880,15 +884,17 @@ static int setup_wait(struct ntsync_device *dev,
 	if (args->pad || (args->flags & ~NTSYNC_WAIT_REALTIME))
 		return -EINVAL;
 
-	if (args->count > NTSYNC_MAX_WAIT_COUNT)
+	if (!args->owner)
+		return -EINVAL;
+
+	if (size >= sizeof(fds))
 		return -EINVAL;
 
 	total_count = count;
 	if (args->alert)
 		total_count++;
 
-	if (copy_from_user(fds, u64_to_user_ptr(args->objs),
-			   array_size(count, sizeof(*fds))))
+	if (copy_from_user(fds, u64_to_user_ptr(args->objs), size))
 		return -EFAULT;
 	if (args->alert)
 		fds[count] = args->alert;
@@ -1208,6 +1214,7 @@ static struct miscdevice ntsync_misc = {
 	.minor		= MISC_DYNAMIC_MINOR,
 	.name		= NTSYNC_NAME,
 	.fops		= &ntsync_fops,
+	.mode		= 0666,
 };
 
 module_misc_device(ntsync_misc);

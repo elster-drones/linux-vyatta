@@ -33,6 +33,7 @@
 #include <drm/drm_sysfs.h>
 #include <drm/drm_utils.h>
 
+#include <linux/export.h>
 #include <linux/platform_device.h>
 #include <linux/property.h>
 #include <linux/uaccess.h>
@@ -279,6 +280,7 @@ static int drm_connector_init_only(struct drm_device *dev,
 	INIT_LIST_HEAD(&connector->probed_modes);
 	INIT_LIST_HEAD(&connector->modes);
 	mutex_init(&connector->mutex);
+	mutex_init(&connector->cec.mutex);
 	mutex_init(&connector->eld_mutex);
 	mutex_init(&connector->edid_override_mutex);
 	mutex_init(&connector->hdmi.infoframes.lock);
@@ -700,6 +702,46 @@ static void drm_mode_remove(struct drm_connector *connector,
 	list_del(&mode->head);
 	drm_mode_destroy(connector->dev, mode);
 }
+
+/**
+ * drm_connector_cec_phys_addr_invalidate - invalidate CEC physical address
+ * @connector: connector undergoing CEC operation
+ *
+ * Invalidated CEC physical address set for this DRM connector.
+ */
+void drm_connector_cec_phys_addr_invalidate(struct drm_connector *connector)
+{
+	mutex_lock(&connector->cec.mutex);
+
+	if (connector->cec.funcs &&
+	    connector->cec.funcs->phys_addr_invalidate)
+		connector->cec.funcs->phys_addr_invalidate(connector);
+
+	mutex_unlock(&connector->cec.mutex);
+}
+EXPORT_SYMBOL(drm_connector_cec_phys_addr_invalidate);
+
+/**
+ * drm_connector_cec_phys_addr_set - propagate CEC physical address
+ * @connector: connector undergoing CEC operation
+ *
+ * Propagate CEC physical address from the display_info to this DRM connector.
+ */
+void drm_connector_cec_phys_addr_set(struct drm_connector *connector)
+{
+	u16 addr;
+
+	mutex_lock(&connector->cec.mutex);
+
+	addr = connector->display_info.source_physical_address;
+
+	if (connector->cec.funcs &&
+	    connector->cec.funcs->phys_addr_set)
+		connector->cec.funcs->phys_addr_set(connector, addr);
+
+	mutex_unlock(&connector->cec.mutex);
+}
+EXPORT_SYMBOL(drm_connector_cec_phys_addr_set);
 
 /**
  * drm_connector_cleanup - cleans up an initialised connector
@@ -1427,6 +1469,10 @@ EXPORT_SYMBOL(drm_hdmi_connector_get_output_format_name);
  * 	callback. For atomic drivers the remapping to the "ACTIVE" property is
  * 	implemented in the DRM core.
  *
+ * 	On atomic drivers any DPMS setproperty ioctl where the value does not
+ * 	change is completely skipped, otherwise a full atomic commit will occur.
+ * 	On legacy drivers the exact behavior is driver specific.
+ *
  * 	Note that this property cannot be set through the MODE_ATOMIC ioctl,
  * 	userspace must use "ACTIVE" on the CRTC instead.
  *
@@ -1641,7 +1687,7 @@ EXPORT_SYMBOL(drm_hdmi_connector_get_output_format_name);
  *	structure from userspace. This is received as blob and stored in
  *	&drm_connector_state.hdr_output_metadata. It parses EDID and saves the
  *	sink metadata in &struct hdr_sink_metadata, as
- *	&drm_connector.hdr_sink_metadata.  Driver uses
+ *	&drm_connector.display_info.hdr_sink_metadata.  Driver uses
  *	drm_hdmi_infoframe_set_hdr_metadata() helper to set the HDR metadata,
  *	hdmi_drm_infoframe_pack() to pack the infoframe as per spec, in case of
  *	HDMI encoder.
@@ -3508,7 +3554,7 @@ EXPORT_SYMBOL(drm_mode_put_tile_group);
 /**
  * drm_mode_get_tile_group - get a reference to an existing tile group
  * @dev: DRM device
- * @topology: 8-bytes unique per monitor.
+ * @topology_id: 9-byte unique ID per monitor.
  *
  * Use the unique bytes to get a reference to an existing tile group.
  *
@@ -3516,14 +3562,14 @@ EXPORT_SYMBOL(drm_mode_put_tile_group);
  * tile group or NULL if not found.
  */
 struct drm_tile_group *drm_mode_get_tile_group(struct drm_device *dev,
-					       const char topology[8])
+					       const char topology_id[9])
 {
 	struct drm_tile_group *tg;
 	int id;
 
 	mutex_lock(&dev->mode_config.idr_mutex);
 	idr_for_each_entry(&dev->mode_config.tile_idr, tg, id) {
-		if (!memcmp(tg->group_data, topology, 8)) {
+		if (!memcmp(tg->group_data, topology_id, sizeof(tg->group_data))) {
 			if (!kref_get_unless_zero(&tg->refcount))
 				tg = NULL;
 			mutex_unlock(&dev->mode_config.idr_mutex);
@@ -3538,7 +3584,7 @@ EXPORT_SYMBOL(drm_mode_get_tile_group);
 /**
  * drm_mode_create_tile_group - create a tile group from a displayid description
  * @dev: DRM device
- * @topology: 8-bytes unique per monitor.
+ * @topology_id: 9-byte unique ID per monitor.
  *
  * Create a tile group for the unique monitor, and get a unique
  * identifier for the tile group.
@@ -3547,7 +3593,7 @@ EXPORT_SYMBOL(drm_mode_get_tile_group);
  * new tile group or NULL.
  */
 struct drm_tile_group *drm_mode_create_tile_group(struct drm_device *dev,
-						  const char topology[8])
+						  const char topology_id[9])
 {
 	struct drm_tile_group *tg;
 	int ret;
@@ -3557,7 +3603,7 @@ struct drm_tile_group *drm_mode_create_tile_group(struct drm_device *dev,
 		return NULL;
 
 	kref_init(&tg->refcount);
-	memcpy(tg->group_data, topology, 8);
+	memcpy(tg->group_data, topology_id, sizeof(tg->group_data));
 	tg->dev = dev;
 
 	mutex_lock(&dev->mode_config.idr_mutex);

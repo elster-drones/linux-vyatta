@@ -16,6 +16,7 @@
 #include <linux/bits.h>
 #include <linux/debugfs.h>
 #include <linux/delay.h>
+#include <linux/dmi.h>
 #include <linux/io.h>
 #include <linux/iopoll.h>
 #include <linux/limits.h>
@@ -28,73 +29,9 @@
 #include <linux/seq_file.h>
 #include <linux/uaccess.h>
 
-#include <asm/amd_node.h>
+#include <asm/amd/node.h>
 
 #include "pmc.h"
-
-/* SMU communication registers */
-#define AMD_PMC_REGISTER_RESPONSE	0x980
-#define AMD_PMC_REGISTER_ARGUMENT	0x9BC
-
-/* PMC Scratch Registers */
-#define AMD_PMC_SCRATCH_REG_CZN		0x94
-#define AMD_PMC_SCRATCH_REG_YC		0xD14
-#define AMD_PMC_SCRATCH_REG_1AH		0xF14
-
-/* STB Registers */
-#define AMD_PMC_STB_S2IDLE_PREPARE	0xC6000001
-#define AMD_PMC_STB_S2IDLE_RESTORE	0xC6000002
-#define AMD_PMC_STB_S2IDLE_CHECK	0xC6000003
-
-/* Base address of SMU for mapping physical address to virtual address */
-#define AMD_PMC_MAPPING_SIZE		0x01000
-#define AMD_PMC_BASE_ADDR_OFFSET	0x10000
-#define AMD_PMC_BASE_ADDR_LO		0x13B102E8
-#define AMD_PMC_BASE_ADDR_HI		0x13B102EC
-#define AMD_PMC_BASE_ADDR_LO_MASK	GENMASK(15, 0)
-#define AMD_PMC_BASE_ADDR_HI_MASK	GENMASK(31, 20)
-
-/* SMU Response Codes */
-#define AMD_PMC_RESULT_OK                    0x01
-#define AMD_PMC_RESULT_CMD_REJECT_BUSY       0xFC
-#define AMD_PMC_RESULT_CMD_REJECT_PREREQ     0xFD
-#define AMD_PMC_RESULT_CMD_UNKNOWN           0xFE
-#define AMD_PMC_RESULT_FAILED                0xFF
-
-/* FCH SSC Registers */
-#define FCH_S0I3_ENTRY_TIME_L_OFFSET	0x30
-#define FCH_S0I3_ENTRY_TIME_H_OFFSET	0x34
-#define FCH_S0I3_EXIT_TIME_L_OFFSET	0x38
-#define FCH_S0I3_EXIT_TIME_H_OFFSET	0x3C
-#define FCH_SSC_MAPPING_SIZE		0x800
-#define FCH_BASE_PHY_ADDR_LOW		0xFED81100
-#define FCH_BASE_PHY_ADDR_HIGH		0x00000000
-
-/* SMU Message Definations */
-#define SMU_MSG_GETSMUVERSION		0x02
-#define SMU_MSG_LOG_GETDRAM_ADDR_HI	0x04
-#define SMU_MSG_LOG_GETDRAM_ADDR_LO	0x05
-#define SMU_MSG_LOG_START		0x06
-#define SMU_MSG_LOG_RESET		0x07
-#define SMU_MSG_LOG_DUMP_DATA		0x08
-#define SMU_MSG_GET_SUP_CONSTRAINTS	0x09
-
-#define PMC_MSG_DELAY_MIN_US		50
-#define RESPONSE_REGISTER_LOOP_MAX	20000
-
-#define DELAY_MIN_US		2000
-#define DELAY_MAX_US		3000
-
-enum amd_pmc_def {
-	MSG_TEST = 0x01,
-	MSG_OS_HINT_PCO,
-	MSG_OS_HINT_RN,
-};
-
-struct amd_pmc_bit_map {
-	const char *name;
-	u32 bit_mask;
-};
 
 static const struct amd_pmc_bit_map soc15_ip_blk_v2[] = {
 	{"DISPLAY",     BIT(0)},
@@ -153,6 +90,11 @@ static bool disable_workarounds;
 module_param(disable_workarounds, bool, 0644);
 MODULE_PARM_DESC(disable_workarounds, "Disable workarounds for platform bugs");
 
+static int delay_suspend = -1;
+module_param(delay_suspend, int, 0644);
+MODULE_PARM_DESC(delay_suspend,
+		 "Delays s2idle by 2.5 seconds to work around buggy ECs, often causing keyboard issues after suspend. 0: don't delay, 1: do delay, -1 (default): let amd_pmc decide. If you need this please report this to: platform-driver-x86@vger.kernel.org");
+
 static struct amd_pmc_dev pmc;
 
 static inline u32 amd_pmc_reg_read(struct amd_pmc_dev *dev, int reg_offset)
@@ -165,28 +107,12 @@ static inline void amd_pmc_reg_write(struct amd_pmc_dev *dev, int reg_offset, u3
 	iowrite32(val, dev->regbase + reg_offset);
 }
 
-struct smu_metrics {
-	u32 table_version;
-	u32 hint_count;
-	u32 s0i3_last_entry_status;
-	u32 timein_s0i2;
-	u64 timeentering_s0i3_lastcapture;
-	u64 timeentering_s0i3_totaltime;
-	u64 timeto_resume_to_os_lastcapture;
-	u64 timeto_resume_to_os_totaltime;
-	u64 timein_s0i3_lastcapture;
-	u64 timein_s0i3_totaltime;
-	u64 timein_swdrips_lastcapture;
-	u64 timein_swdrips_totaltime;
-	u64 timecondition_notmet_lastcapture[32];
-	u64 timecondition_notmet_totaltime[32];
-} __packed;
-
 static void amd_pmc_get_ip_info(struct amd_pmc_dev *dev)
 {
 	switch (dev->cpu_id) {
 	case AMD_CPU_ID_PCO:
 	case AMD_CPU_ID_RN:
+	case AMD_CPU_ID_VG:
 	case AMD_CPU_ID_YC:
 	case AMD_CPU_ID_CB:
 		dev->num_ips = 12;
@@ -238,6 +164,8 @@ static int amd_pmc_setup_smu_logging(struct amd_pmc_dev *dev)
 			return -ENOMEM;
 	}
 
+	memset_io(dev->smu_virt_addr, 0, sizeof(struct smu_metrics));
+
 	/* Start the logging */
 	amd_pmc_send_cmd(dev, 0, NULL, SMU_MSG_LOG_RESET, false);
 	amd_pmc_send_cmd(dev, 0, NULL, SMU_MSG_LOG_START, false);
@@ -247,11 +175,12 @@ static int amd_pmc_setup_smu_logging(struct amd_pmc_dev *dev)
 
 static int get_metrics_table(struct amd_pmc_dev *pdev, struct smu_metrics *table)
 {
-	if (!pdev->smu_virt_addr) {
-		int ret = amd_pmc_setup_smu_logging(pdev);
+	int rc;
 
-		if (ret)
-			return ret;
+	if (!pdev->smu_virt_addr) {
+		rc = amd_pmc_setup_smu_logging(pdev);
+		if (rc)
+			return rc;
 	}
 
 	if (pdev->cpu_id == AMD_CPU_ID_PCO)
@@ -300,10 +229,10 @@ static ssize_t smu_fw_version_show(struct device *d, struct device_attribute *at
 				   char *buf)
 {
 	struct amd_pmc_dev *dev = dev_get_drvdata(d);
+	int rc;
 
 	if (!dev->major) {
-		int rc = amd_pmc_get_smu_version(dev);
-
+		rc = amd_pmc_get_smu_version(dev);
 		if (rc)
 			return rc;
 	}
@@ -314,10 +243,10 @@ static ssize_t smu_program_show(struct device *d, struct device_attribute *attr,
 				   char *buf)
 {
 	struct amd_pmc_dev *dev = dev_get_drvdata(d);
+	int rc;
 
 	if (!dev->major) {
-		int rc = amd_pmc_get_smu_version(dev);
-
+		rc = amd_pmc_get_smu_version(dev);
 		if (rc)
 			return rc;
 	}
@@ -595,6 +524,7 @@ static int amd_pmc_get_os_hint(struct amd_pmc_dev *dev)
 	case AMD_CPU_ID_PCO:
 		return MSG_OS_HINT_PCO;
 	case AMD_CPU_ID_RN:
+	case AMD_CPU_ID_VG:
 	case AMD_CPU_ID_YC:
 	case AMD_CPU_ID_CB:
 	case AMD_CPU_ID_PS:
@@ -608,19 +538,6 @@ static int amd_pmc_get_os_hint(struct amd_pmc_dev *dev)
 static int amd_pmc_wa_irq1(struct amd_pmc_dev *pdev)
 {
 	struct device *d;
-	int rc;
-
-	/* cezanne platform firmware has a fix in 64.66.0 */
-	if (pdev->cpu_id == AMD_CPU_ID_CZN) {
-		if (!pdev->major) {
-			rc = amd_pmc_get_smu_version(pdev);
-			if (rc)
-				return rc;
-		}
-
-		if (pdev->major > 64 || (pdev->major == 64 && pdev->minor > 65))
-			return 0;
-	}
 
 	d = bus_find_device_by_name(&serio_bus, NULL, "serio0");
 	if (!d)
@@ -687,12 +604,81 @@ static int amd_pmc_verify_czn_rtc(struct amd_pmc_dev *pdev, u32 *arg)
 	return rc;
 }
 
+static bool amd_pmc_intermediate_wakeup_need_delay(struct amd_pmc_dev *pdev)
+{
+	/*
+	 * Starting a new HW sleep cycle right after waking from one
+	 * can cause electrical problems triggering the over voltage protection.
+	 * That is avoided by delaying the next suspend a bit, see also
+	 * https://lore.kernel.org/all/20250414162446.3853194-1-superm1@kernel.org/
+	 */
+	struct smu_metrics table;
+
+	return get_metrics_table(pdev, &table) == 0 && table.s0i3_last_entry_status;
+}
+
+static bool amd_pmc_want_suspend_delay(struct amd_pmc_dev *pdev)
+{
+	/*
+	 * intermediate_wakeup implies that the machine didn't get to deepest sleep
+	 * state before - otherwise this function isn't called in amd_pmc_s2idle_check()
+	 * because amd_pmc_intermediate_wakeup_need_delay() returns true first.
+	 * On some IdeaPads that happens when charging, because the EC seems
+	 * to send lots of messages then that wake the machine.
+	 *
+	 * But even in that case, the sleep here is necessary (on those IdeaPads),
+	 * otherwise they wake up completely (resume) after a few seconds.
+	 * So this variable is only used to avoid spamming dmesg on each
+	 * intermediate wakeup.
+	 */
+	bool intermediate_wakeup = !pdev->is_first_check_after_suspend;
+
+	/*
+	 * Some Lenovo Laptops (like different IdeaPad 3 Slims) need some
+	 * me-time before sleeping or they get uncooperative after waking
+	 * up and don't send events for keyboard and lid switch anymore.
+	 *
+	 * Unfortunately this doesn't entirely fix the problem: It can still
+	 * happen when resuming with a timer (wakealarm), but at least the
+	 * more common usecases (wakeup by opening lid or pressing a key)
+	 * work fine with this workaround.
+	 *
+	 * See https://bugzilla.kernel.org/show_bug.cgi?id=221383
+	 */
+	if (amd_pmc_quirk_need_suspend_delay(pdev)) {
+		/*
+		 * delay_suspend=1 force-enables this, otherwise it can be
+		 * disabled with disable_workarounds or delay_suspend=0
+		 */
+		if (delay_suspend == 1 || (delay_suspend == -1 && !disable_workarounds)) {
+			if (!intermediate_wakeup)
+				dev_info(pdev->dev, "Delaying suspend by 2.5s to avoid platform bug\n");
+			return true;
+		}
+		if (!intermediate_wakeup)
+			dev_info(pdev->dev, "Not delaying suspend because of module parameter, even though your device is assumed to need it!\n");
+	} else if (delay_suspend == 1) {
+		if (!intermediate_wakeup)
+			dev_info(pdev->dev, "Delaying suspend by 2.5s because delay_suspend=1. If this solves problems on your machine, please report this whole line to: platform-driver-x86@vger.kernel.org so it can be automatically detected as affected in the future. System Vendor: \"%s\" Product Name: \"%s\" Product Family: \"%s\" Board Vendor: \"%s\" Board Name: \"%s\"\n",
+				 dmi_get_system_info(DMI_SYS_VENDOR) ?: "(Unknown)",
+				 dmi_get_system_info(DMI_PRODUCT_NAME) ?: "(Unknown)",
+				 dmi_get_system_info(DMI_PRODUCT_FAMILY) ?: "(Unknown)",
+				 dmi_get_system_info(DMI_BOARD_VENDOR) ?: "(Unknown)",
+				 dmi_get_system_info(DMI_BOARD_NAME) ?: "(Unknown)");
+		return true;
+	}
+	return false;
+}
+
 static void amd_pmc_s2idle_prepare(void)
 {
 	struct amd_pmc_dev *pdev = &pmc;
 	int rc;
 	u8 msg;
 	u32 arg = 1;
+
+	/* Reset this variable because this is a fresh suspend */
+	pdev->is_first_check_after_suspend = true;
 
 	/* Reset and Start SMU logging - to monitor the s0i3 stats */
 	amd_pmc_setup_smu_logging(pdev);
@@ -721,13 +707,11 @@ static void amd_pmc_s2idle_prepare(void)
 static void amd_pmc_s2idle_check(void)
 {
 	struct amd_pmc_dev *pdev = &pmc;
-	struct smu_metrics table;
 	int rc;
 
-	/* CZN: Ensure that future s0i3 entry attempts at least 10ms passed */
-	if (pdev->cpu_id == AMD_CPU_ID_CZN && !get_metrics_table(pdev, &table) &&
-	    table.s0i3_last_entry_status)
-		usleep_range(10000, 20000);
+	if (amd_pmc_intermediate_wakeup_need_delay(pdev) ||
+	    amd_pmc_want_suspend_delay(pdev))
+		msleep(2500);
 
 	/* Dump the IdleMask before we add to the STB */
 	amd_pmc_idlemask_read(pdev, pdev->dev, NULL);
@@ -735,6 +719,9 @@ static void amd_pmc_s2idle_check(void)
 	rc = amd_stb_write(pdev, AMD_PMC_STB_S2IDLE_CHECK);
 	if (rc)
 		dev_err(pdev->dev, "error writing to STB: %d\n", rc);
+
+	/* remember that first check after suspend is done (until next prepare) */
+	pdev->is_first_check_after_suspend = false;
 }
 
 static int amd_pmc_dump_data(struct amd_pmc_dev *pdev)
@@ -778,14 +765,14 @@ static struct acpi_s2idle_dev_ops amd_pmc_s2idle_dev_ops = {
 static int amd_pmc_suspend_handler(struct device *dev)
 {
 	struct amd_pmc_dev *pdev = dev_get_drvdata(dev);
+	int rc;
 
 	/*
 	 * Must be called only from the same set of dev_pm_ops handlers
 	 * as i8042_pm_suspend() is called: currently just from .suspend.
 	 */
 	if (pdev->disable_8042_wakeup && !disable_workarounds) {
-		int rc = amd_pmc_wa_irq1(pdev);
-
+		rc = amd_pmc_wa_irq1(pdev);
 		if (rc) {
 			dev_err(pdev->dev, "failed to adjust keyboard wakeup: %d\n", rc);
 			return rc;
@@ -808,6 +795,8 @@ static const struct pci_device_id pmc_pci_ids[] = {
 	{ PCI_DEVICE(PCI_VENDOR_ID_AMD, AMD_CPU_ID_PCO) },
 	{ PCI_DEVICE(PCI_VENDOR_ID_AMD, AMD_CPU_ID_RV) },
 	{ PCI_DEVICE(PCI_VENDOR_ID_AMD, AMD_CPU_ID_SP) },
+	{ PCI_DEVICE(PCI_VENDOR_ID_AMD, AMD_CPU_ID_SHP) },
+	{ PCI_DEVICE(PCI_VENDOR_ID_AMD, AMD_CPU_ID_VG) },
 	{ PCI_DEVICE(PCI_VENDOR_ID_AMD, PCI_DEVICE_ID_AMD_1AH_M20H_ROOT) },
 	{ PCI_DEVICE(PCI_VENDOR_ID_AMD, PCI_DEVICE_ID_AMD_1AH_M60H_ROOT) },
 	{ }
@@ -823,7 +812,6 @@ static int amd_pmc_probe(struct platform_device *pdev)
 	u32 val;
 
 	dev->dev = &pdev->dev;
-
 	rdev = pci_get_domain_bus_and_slot(0, 0, PCI_DEVFN(0, 0));
 	if (!rdev || !pci_match_id(pmc_pci_ids, rdev)) {
 		err = -ENODEV;
@@ -831,8 +819,7 @@ static int amd_pmc_probe(struct platform_device *pdev)
 	}
 
 	dev->cpu_id = rdev->device;
-
-	if (dev->cpu_id == AMD_CPU_ID_SP) {
+	if (dev->cpu_id == AMD_CPU_ID_SP || dev->cpu_id == AMD_CPU_ID_SHP) {
 		dev_warn_once(dev->dev, "S0i3 is not supported on this hardware\n");
 		err = -ENODEV;
 		goto err_pci_dev_put;
@@ -847,7 +834,6 @@ static int amd_pmc_probe(struct platform_device *pdev)
 	}
 
 	base_addr_lo = val & AMD_PMC_BASE_ADDR_HI_MASK;
-
 	err = amd_smn_read(0, AMD_PMC_BASE_ADDR_HI, &val);
 	if (err) {
 		dev_err(dev->dev, "error reading 0x%x\n", AMD_PMC_BASE_ADDR_HI);
@@ -865,7 +851,9 @@ static int amd_pmc_probe(struct platform_device *pdev)
 		goto err_pci_dev_put;
 	}
 
-	mutex_init(&dev->lock);
+	err = devm_mutex_init(dev->dev, &dev->lock);
+	if (err)
+		goto err_pci_dev_put;
 
 	/* Get num of IP blocks within the SoC */
 	amd_pmc_get_ip_info(dev);
@@ -882,13 +870,17 @@ static int amd_pmc_probe(struct platform_device *pdev)
 	amd_pmc_dbgfs_register(dev);
 	err = amd_stb_s2d_init(dev);
 	if (err)
-		goto err_pci_dev_put;
+		goto err_dbgfs_unregister;
 
 	if (IS_ENABLED(CONFIG_AMD_MP2_STB))
 		amd_mp2_stb_init(dev);
 	pm_report_max_hw_sleep(U64_MAX);
 	return 0;
 
+err_dbgfs_unregister:
+	amd_pmc_dbgfs_unregister(dev);
+	if (IS_ENABLED(CONFIG_SUSPEND))
+		acpi_unregister_lps0_dev(&amd_pmc_s2idle_dev_ops);
 err_pci_dev_put:
 	pci_dev_put(rdev);
 	return err;
@@ -904,7 +896,6 @@ static void amd_pmc_remove(struct platform_device *pdev)
 	pci_dev_put(dev->rdev);
 	if (IS_ENABLED(CONFIG_AMD_MP2_STB))
 		amd_mp2_stb_deinit(dev);
-	mutex_destroy(&dev->lock);
 }
 
 static const struct acpi_device_id amd_pmc_acpi_ids[] = {

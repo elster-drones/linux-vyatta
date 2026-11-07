@@ -84,6 +84,12 @@ static int devicetree_state_flags;
 #define DTSF_APPLY_FAIL		0x01
 #define DTSF_REVERT_FAIL	0x02
 
+static int of_prop_val_eq(const struct property *p1, const struct property *p2)
+{
+	return p1->length == p2->length &&
+	       !memcmp(p1->value, p2->value, (size_t)p1->length);
+}
+
 /*
  * If a changeset apply or revert encounters an error, an attempt will
  * be made to undo partial changes, but may fail.  If the undo fails
@@ -129,7 +135,7 @@ static BLOCKING_NOTIFIER_HEAD(overlay_notify_chain);
  * @nb:		Notifier block to register
  *
  * Register for notification on overlay operations on device tree nodes. The
- * reported actions definied by @of_reconfig_change. The notifier callback
+ * reported actions defined by @of_reconfig_change. The notifier callback
  * furthermore receives a pointer to the affected device tree node.
  *
  * Note that a notifier callback is not supposed to store pointers to a device
@@ -177,6 +183,15 @@ static int overlay_notify(struct overlay_changeset *ovcs,
 	}
 
 	return 0;
+}
+
+static void overlay_fw_devlink_refresh(struct overlay_changeset *ovcs)
+{
+	for (int i = 0; i < ovcs->count; i++) {
+		struct device_node *np = ovcs->fragments[i].target;
+
+		fw_devlink_refresh_fwnode(of_fwnode_handle(np));
+	}
 }
 
 /*
@@ -241,6 +256,9 @@ static struct property *dup_and_fixup_symbol_prop(
 	if (!target_path)
 		return NULL;
 	target_path_len = strlen(target_path);
+	/* a root target renders as "/"; drop it to avoid "//" results */
+	if (target_path_len == 1 && target_path[0] == '/' && path_tail_len)
+		target_path_len = 0;
 
 	new_prop = kzalloc(sizeof(*new_prop), GFP_KERNEL);
 	if (!new_prop)
@@ -304,9 +322,7 @@ static int add_changeset_property(struct overlay_changeset *ovcs,
 	int ret = 0;
 
 	if (target->in_livetree)
-		if (!of_prop_cmp(overlay_prop->name, "name") ||
-		    !of_prop_cmp(overlay_prop->name, "phandle") ||
-		    !of_prop_cmp(overlay_prop->name, "linux,phandle"))
+		if (is_pseudo_property(overlay_prop->name))
 			return 0;
 
 	if (target->in_livetree)
@@ -345,12 +361,13 @@ static int add_changeset_property(struct overlay_changeset *ovcs,
 		return -ENOMEM;
 
 	if (!prop) {
-		if (!target->in_livetree) {
+		ret = of_changeset_add_property(&ovcs->cset, target->np,
+						new_prop);
+		/* the detached node owns the property until the apply */
+		if (!ret && !target->in_livetree) {
 			new_prop->next = target->np->deadprops;
 			target->np->deadprops = new_prop;
 		}
-		ret = of_changeset_add_property(&ovcs->cset, target->np,
-						new_prop);
 	} else {
 		ret = of_changeset_update_property(&ovcs->cset, target->np,
 						   new_prop);
@@ -840,6 +857,10 @@ static int init_overlay_changeset(struct overlay_changeset *ovcs,
 err_out:
 	pr_err("%s() failed, ret = %d\n", __func__, ret);
 
+	/* let free_overlay_changeset() put the fragments set up so far */
+	if (ovcs->fragments)
+		ovcs->count = cnt;
+
 	return ret;
 }
 
@@ -850,7 +871,8 @@ static void free_overlay_changeset(struct overlay_changeset *ovcs)
 	if (ovcs->cset.entries.next)
 		of_changeset_destroy(&ovcs->cset);
 
-	if (ovcs->id) {
+	/* a failed idr_alloc() leaves its negative error in ovcs->id */
+	if (ovcs->id > 0) {
 		idr_remove(&ovcs_idr, ovcs->id);
 		list_del(&ovcs->ovcs_list);
 		ovcs->id = 0;
@@ -946,6 +968,12 @@ static int of_overlay_apply(struct overlay_changeset *ovcs,
 	if (ret)
 		pr_err("overlay apply changeset entry notify error %d\n", ret);
 	/* notify failure is not fatal, continue */
+
+	/*
+	 * Needs to happen after changeset notify to give the listeners a chance
+	 * to finish creating all the devices they need to create.
+	 */
+	overlay_fw_devlink_refresh(ovcs);
 
 	ret_tmp = overlay_notify(ovcs, OF_OVERLAY_POST_APPLY);
 	if (ret_tmp)

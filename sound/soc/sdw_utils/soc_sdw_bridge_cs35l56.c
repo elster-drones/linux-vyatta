@@ -60,6 +60,10 @@ static int asoc_sdw_bridge_cs35l56_asp_init(struct snd_soc_pcm_runtime *rtd)
 
 	/* 4 x 16-bit sample slots and FSYNC=48000, BCLK=3.072 MHz */
 	for_each_rtd_codec_dais(rtd, i, codec_dai) {
+		ret = asoc_sdw_cs35l56_volume_limit(card, codec_dai->component->name_prefix);
+		if (ret)
+			return ret;
+
 		ret = snd_soc_dai_set_tdm_slot(codec_dai, tx_mask, rx_mask, 4, 16);
 		if (ret < 0)
 			return ret;
@@ -100,11 +104,9 @@ static const struct snd_soc_dai_link bridge_dai_template = {
 	SND_SOC_DAILINK_REG(asoc_sdw_bridge_dai),
 };
 
-int asoc_sdw_bridge_cs35l56_count_sidecar(struct snd_soc_card *card,
+int asoc_sdw_bridge_cs35l56_count_sidecar(struct asoc_sdw_mc_private *ctx,
 					  int *num_dais, int *num_devs)
 {
-	struct asoc_sdw_mc_private *ctx = snd_soc_card_get_drvdata(card);
-
 	if (ctx->mc_quirk & SOC_SDW_SIDECAR_AMPS) {
 		(*num_dais)++;
 		(*num_devs) += ARRAY_SIZE(bridge_cs35l56_name_prefixes);

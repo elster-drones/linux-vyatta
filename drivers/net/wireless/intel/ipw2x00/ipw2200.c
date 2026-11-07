@@ -3295,7 +3295,7 @@ static int ipw_init_nic(struct ipw_priv *priv)
 	rc = ipw_poll_bit(priv, IPW_GP_CNTRL_RW,
 			  IPW_GP_CNTRL_BIT_CLOCK_READY, 250);
 	if (rc < 0)
-		IPW_DEBUG_INFO("FAILED wait for clock stablization\n");
+		IPW_DEBUG_INFO("FAILED wait for clock stabilization\n");
 
 	/* assert SW reset */
 	ipw_set_bit(priv, IPW_RESET_REG, IPW_RESET_REG_SW_RESET);
@@ -11387,7 +11387,13 @@ static const struct pci_device_id card_ids[] = {
 	{PCI_VENDOR_ID_INTEL, 0x1043, 0x8086, 0x2754, 0, 0, 0},
 	{PCI_VENDOR_ID_INTEL, 0x1043, 0x8086, 0x2761, 0, 0, 0},
 	{PCI_VENDOR_ID_INTEL, 0x1043, 0x8086, 0x2762, 0, 0, 0},
-	{PCI_VDEVICE(INTEL, 0x104f), 0},
+	/*
+	 * This ID conflicts with i40e, but the devices can be differentiated
+	 * because i40e devices use PCI_CLASS_NETWORK_ETHERNET and ipw2200
+	 * devices use PCI_CLASS_NETWORK_OTHER.
+	 */
+	{PCI_DEVICE(PCI_VENDOR_ID_INTEL, 0x104f),
+		PCI_CLASS_NETWORK_OTHER << 8, 0xffff00, 0},
 	{PCI_VDEVICE(INTEL, 0x4220), 0},	/* BG */
 	{PCI_VDEVICE(INTEL, 0x4221), 0},	/* BG */
 	{PCI_VDEVICE(INTEL, 0x4223), 0},	/* ABG */

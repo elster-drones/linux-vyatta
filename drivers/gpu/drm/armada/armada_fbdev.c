@@ -45,10 +45,10 @@ int armada_fbdev_driver_fbdev_probe(struct drm_fb_helper *fbh,
 				    struct drm_fb_helper_surface_size *sizes)
 {
 	struct drm_device *dev = fbh->dev;
+	struct fb_info *info = fbh->info;
 	struct drm_mode_fb_cmd2 mode;
 	struct armada_framebuffer *dfb;
 	struct armada_gem_object *obj;
-	struct fb_info *info;
 	int size, ret;
 	void *ptr;
 
@@ -78,7 +78,10 @@ int armada_fbdev_driver_fbdev_probe(struct drm_fb_helper *fbh,
 		return -ENOMEM;
 	}
 
-	dfb = armada_framebuffer_create(dev, &mode, obj);
+	dfb = armada_framebuffer_create(dev,
+					drm_get_format_info(dev, mode.pixel_format,
+							    mode.modifier[0]),
+					&mode, obj);
 
 	/*
 	 * A reference is now held by the framebuffer object if
@@ -88,12 +91,6 @@ int armada_fbdev_driver_fbdev_probe(struct drm_fb_helper *fbh,
 
 	if (IS_ERR(dfb))
 		return PTR_ERR(dfb);
-
-	info = drm_fb_helper_alloc_info(fbh);
-	if (IS_ERR(info)) {
-		ret = PTR_ERR(info);
-		goto err_fballoc;
-	}
 
 	info->fbops = &armada_fb_ops;
 	info->fix.smem_start = obj->phys_addr;
@@ -110,8 +107,4 @@ int armada_fbdev_driver_fbdev_probe(struct drm_fb_helper *fbh,
 		(unsigned long long)obj->phys_addr);
 
 	return 0;
-
- err_fballoc:
-	dfb->fb.funcs->destroy(&dfb->fb);
-	return ret;
 }
