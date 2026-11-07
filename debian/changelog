@@ -1,3 +1,9 @@
+linux (6.18.62-1elster2) vyatta; urgency=medium
+
+  * Declare Linux UAPI headers needed by native host-tool compilation.
+
+ -- Erik Ziegenbalg <erikziege@gmail.com>  Fri, 06 Nov 2026 16:15:00 -0800
+
 linux (6.18.62-1elster1) vyatta; urgency=high
 
   * Move the router kernel from 6.14-rc4 to maintained Linux 6.18 LTS.
