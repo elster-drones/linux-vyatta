@@ -1,3 +1,10 @@
+linux (7.3.3-1elster3) vyatta; urgency=high
+
+  * Keep a single module linker-script selection and an explicit dependency
+    when module preparation has not yet generated the default script.
+
+ -- OpenFactory <builds@openfactory.tech>  Mon, 09 Nov 2026 01:30:00 +0000
+
 linux (7.3.3-1elster2) vyatta; urgency=high
 
   * Enable the new upstream xtables legacy selector to retain Vyatta BYPASS
