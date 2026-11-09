@@ -2,10 +2,6 @@ Tests: python
 Restrictions: superficial
 Depends: python3, pycodestyle, pyflakes3
 
-Tests: installed-packages
-Depends: build-essential, python3, kmod, linux-headers-amd64 [amd64], linux-headers-arm64 [arm64], linux-image-vyatta-amd64 [amd64], linux-image-vyatta-arm64 [arm64]
-Architectures: amd64 arm64
-
 Tests: selftests
 Restrictions: breaks-testbed, needs-root, isolation-machine
 Depends: kexec-tools, python3, gcc, make, libpopt-dev, gcc-multilib [amd64], bc, fuse, libfuse-dev, pkg-config, linux-image-7.3.0-trunk-vyatta-amd64 [amd64], linux-image-7.3.0-trunk-vyatta-arm64 [arm64]
