@@ -517,11 +517,14 @@ class Gencontrol(Base):
 
         vars.setdefault('desc', None)
 
-        if os.path.isfile("debian/config/%s/%s/config" % (arch, featureset)):
-            fset_config = KconfigFile()
-            fset_config.read(open("debian/config/%s/%s/config" % (arch, featureset)))
-            if 'NET_VRF' in fset_config and fset_config['NET_VRF'].value:
-                image_fields['Provides'].append("linux-image-vrf")
+        fset_config = KconfigFile()
+        for path in ("debian/config/featureset-%s/config" % featureset,
+                     "debian/config/%s/%s/config" % (arch, featureset)):
+            if os.path.isfile(path):
+                with open(path) as stream:
+                    fset_config.read(stream)
+        if 'NET_VRF' in fset_config and fset_config['NET_VRF'].value:
+            image_fields['Provides'].append("linux-image-vrf")
 
         image_main = self.process_real_image(image[0], image_fields, vars)
         packages_own.append(image_main)

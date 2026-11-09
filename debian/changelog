@@ -1,3 +1,10 @@
+linux (7.3.3-1elster7) vyatta; urgency=medium
+
+  * Advertise VRF enabled by the shared Vyatta feature set on ARM64 as well
+    as amd64, preserving the installed routing packages dependency contract.
+
+ -- OpenFactory <builds@openfactory.tech>  Mon, 09 Nov 2026 15:30:00 +0000
+
 linux (7.3.3-1elster6) vyatta; urgency=medium
 
   * Allow informational compiler and pahole warnings in the installed-header

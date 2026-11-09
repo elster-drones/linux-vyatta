@@ -157,7 +157,7 @@ Build-Profiles: <!stage1>
 
 Package: linux-image-7.3.0-trunk-vyatta-arm64
 Architecture: arm64
-Provides: linux-image-vyatta-arm64, linux-image-vyatta
+Provides: linux-image-vyatta-arm64, linux-image-vyatta, linux-image-vrf
 Depends: kmod, linux-base (>= 4.3~), linux-bootwrapper-7.3.0-trunk [powerpc ppc64], ${misc:Depends}, initramfs-tools (>= 0.120+deb8u2) [arm64] | linux-initramfs-tool [arm64]
 Recommends: firmware-linux-free, apparmor [arm64]
 Suggests: linux-doc-7.3, debian-kernel-handbook
