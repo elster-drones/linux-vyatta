@@ -131,7 +131,7 @@ Index: linux-vyatta/drivers/nvmem/layouts.c
 ===================================================================
 --- linux-vyatta.orig/drivers/nvmem/layouts.c	2026-11-06 10:18:30.000000000 -0800
 +++ linux-vyatta/drivers/nvmem/layouts.c	2026-11-08 16:14:52.161257129 -0800
-@@ -6,8 +6,11 @@
+@@ -6,8 +6,12 @@
   * Author: Miquel Raynal <miquel.raynal@bootlin.com
   */
  
@@ -139,11 +139,12 @@ Index: linux-vyatta/drivers/nvmem/layouts.c
  #include <linux/device.h>
  #include <linux/dma-mapping.h>
 +#include <linux/etherdevice.h>
++#include <linux/hex.h>
 +#include <linux/if_ether.h>
  #include <linux/nvmem-consumer.h>
  #include <linux/nvmem-provider.h>
  #include <linux/of.h>
-@@ -21,6 +24,83 @@
+@@ -21,6 +25,83 @@
  #define to_nvmem_layout_device(_dev) \
  	container_of((_dev), struct nvmem_layout, dev)
  

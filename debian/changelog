@@ -1,3 +1,9 @@
+linux (7.3.3-1elster5) vyatta; urgency=high
+
+  * Include the Linux 7.3 hex helper declarations in the board MAC-cell port.
+
+ -- OpenFactory <builds@openfactory.tech>  Mon, 09 Nov 2026 02:30:00 +0000
+
 linux (7.3.3-1elster4) vyatta; urgency=high
 
   * Prevent upgrades from pairing this kernel with the old TUN metadata ABI.
