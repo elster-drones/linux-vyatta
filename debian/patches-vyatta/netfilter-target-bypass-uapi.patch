@@ -1,5 +1,7 @@
+Index: elster-router-kernel/include/uapi/linux/netfilter/xt_BYPASS.h
+===================================================================
 --- /dev/null
-+++ b/include/uapi/linux/netfilter/xt_BYPASS.h
++++ elster-router-kernel/include/uapi/linux/netfilter/xt_BYPASS.h
 @@ -0,0 +1,21 @@
 +/* SPDX-License-Identifier: GPL-2.0 WITH Linux-syscall-note */
 +/*

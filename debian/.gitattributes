@@ -1,0 +1,3 @@
+upstream/git-revision export-subst
+patches/** -whitespace
+patches-vyatta/** -whitespace

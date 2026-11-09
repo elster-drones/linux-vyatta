@@ -1,0 +1,15 @@
+#!/usr/bin/python3
+"""Bind the installed image to the exported kernel source revision."""
+import json
+from pathlib import Path
+import re
+import sys
+
+version, release, destination = sys.argv[1:]
+revision = Path('debian/upstream/git-revision').read_text().strip()
+if not re.fullmatch(r'[0-9a-f]{40}', revision):
+    raise SystemExit('Export the committed kernel with git archive before packaging')
+metadata = {'version': version, 'release': release, 'source_commit': revision}
+path = Path(destination)
+path.parent.mkdir(parents=True, exist_ok=True)
+path.write_text(json.dumps(metadata, sort_keys=True) + '\n')

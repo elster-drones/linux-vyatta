@@ -20,11 +20,13 @@ Signed-off-by: Ben Hutchings <ben@decadent.org.uk>
  security/Kconfig           | 9 +++++++++
  3 files changed, 22 insertions(+)
 
---- a/include/linux/perf_event.h
-+++ b/include/linux/perf_event.h
-@@ -1659,6 +1659,11 @@ int perf_cpu_time_max_percent_handler(co
- int perf_event_max_stack_handler(const struct ctl_table *table, int write,
- 		void *buffer, size_t *lenp, loff_t *ppos);
+Index: elster-router-kernel/include/linux/perf_event.h
+===================================================================
+--- elster-router-kernel.orig/include/linux/perf_event.h
++++ elster-router-kernel/include/linux/perf_event.h
+@@ -1762,6 +1762,11 @@ extern int sysctl_perf_event_sample_rate
+ 
+ extern void perf_sample_event_took(u64 sample_len_ns);
  
 +static inline bool perf_paranoid_any(void)
 +{
@@ -34,9 +36,11 @@ Signed-off-by: Ben Hutchings <ben@decadent.org.uk>
  /* Access to perf_event_open(2) syscall. */
  #define PERF_SECURITY_OPEN		0
  
---- a/kernel/events/core.c
-+++ b/kernel/events/core.c
-@@ -449,8 +449,13 @@ static struct kmem_cache *perf_event_cac
+Index: elster-router-kernel/kernel/events/core.c
+===================================================================
+--- elster-router-kernel.orig/kernel/events/core.c
++++ elster-router-kernel/kernel/events/core.c
+@@ -463,8 +463,13 @@ static struct kmem_cache *perf_event_cac
   *   0 - disallow raw tracepoint access for unpriv
   *   1 - disallow cpu events for unpriv
   *   2 - disallow kernel profiling for unpriv
@@ -48,9 +52,9 @@ Signed-off-by: Ben Hutchings <ben@decadent.org.uk>
  int sysctl_perf_event_paranoid __read_mostly = 2;
 +#endif
  
- /* Minimum for 512 kiB + 1 user control page */
- int sysctl_perf_event_mlock __read_mostly = 512 + (PAGE_SIZE / 1024); /* 'free' kiB per user */
-@@ -12788,6 +12793,9 @@ SYSCALL_DEFINE5(perf_event_open,
+ /* Minimum for 512 kiB + 1 user control page. 'free' kiB per user. */
+ static int sysctl_perf_event_mlock __read_mostly = 512 + (PAGE_SIZE / 1024);
+@@ -13509,6 +13514,9 @@ SYSCALL_DEFINE5(perf_event_open,
  	if (err)
  		return err;
  
@@ -58,13 +62,15 @@ Signed-off-by: Ben Hutchings <ben@decadent.org.uk>
 +		return -EACCES;
 +
  	/* Do we allow access to perf_event_open(2) ? */
- 	err = security_perf_event_open(&attr, PERF_SECURITY_OPEN);
+ 	err = security_perf_event_open(PERF_SECURITY_OPEN);
  	if (err)
---- a/security/Kconfig
-+++ b/security/Kconfig
-@@ -51,6 +51,15 @@ config PROC_MEM_NO_FORCE
- 
- endchoice
+Index: elster-router-kernel/security/Kconfig
+===================================================================
+--- elster-router-kernel.orig/security/Kconfig
++++ elster-router-kernel/security/Kconfig
+@@ -72,6 +72,15 @@ config MSEAL_SYSTEM_MAPPINGS
+ 	  For complete descriptions of memory sealing, please see
+ 	  Documentation/userspace-api/mseal.rst
  
 +config SECURITY_PERF_EVENTS_RESTRICT
 +	bool "Restrict unprivileged use of performance events"

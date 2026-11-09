@@ -27,9 +27,11 @@ Signed-off-by: Robert Shearman <rshearma@vyatta.att-mail.com>
  net/mpls/internal.h            |    3 
  4 files changed, 166 insertions(+), 13 deletions(-)
 
---- a/include/uapi/linux/mpls.h
-+++ b/include/uapi/linux/mpls.h
-@@ -74,4 +74,34 @@ struct mpls_link_stats {
+Index: linux-vyatta/include/uapi/linux/mpls.h
+===================================================================
+--- linux-vyatta.orig/include/uapi/linux/mpls.h	2026-11-06 10:18:30.000000000 -0800
++++ linux-vyatta/include/uapi/linux/mpls.h	2026-11-08 16:04:24.653264469 -0800
+@@ -74,4 +74,34 @@
  	__u64	rx_noroute;		/* no route for packet dest	*/
  };
  
@@ -64,19 +66,23 @@ Signed-off-by: Robert Shearman <rshearma@vyatta.att-mail.com>
 +#define RTMPNF_ALL (RTMPNF_BOS_ONLY)
 +
  #endif /* _UAPI_MPLS_H */
---- a/include/uapi/linux/rtnetlink.h
-+++ b/include/uapi/linux/rtnetlink.h
-@@ -398,6 +398,7 @@ enum rtattr_type_t {
- 	RTA_DPORT,
+Index: linux-vyatta/include/uapi/linux/rtnetlink.h
+===================================================================
+--- linux-vyatta.orig/include/uapi/linux/rtnetlink.h	2026-11-06 10:18:30.000000000 -0800
++++ linux-vyatta/include/uapi/linux/rtnetlink.h	2026-11-08 16:04:39.914737630 -0800
+@@ -400,6 +400,7 @@
  	RTA_NH_ID,
  	RTA_FLOWLABEL,
+ 	RTA_DEL_REASON,
 +	RTA_MPLS_PAYLOAD = (RTA_PAD + 9),
  	__RTA_MAX
  };
  
---- a/net/mpls/af_mpls.c
-+++ b/net/mpls/af_mpls.c
-@@ -238,26 +238,39 @@ static const struct mpls_nh *mpls_select
+Index: linux-vyatta/net/mpls/af_mpls.c
+===================================================================
+--- linux-vyatta.orig/net/mpls/af_mpls.c	2026-11-06 10:18:30.000000000 -0800
++++ linux-vyatta/net/mpls/af_mpls.c	2026-11-08 16:04:39.915376852 -0800
+@@ -263,26 +263,39 @@
  	int nh_index = 0;
  	int n = 0;
  	u8 alive;
@@ -119,7 +125,7 @@ Signed-off-by: Robert Shearman <rshearma@vyatta.att-mail.com>
  		if (n == nh_index)
  			return nh;
  		n++;
-@@ -270,7 +283,7 @@ out:
+@@ -295,7 +308,7 @@
  static bool mpls_egress(struct net *net, struct mpls_route *rt,
  			struct sk_buff *skb, struct mpls_entry_decoded dec)
  {
@@ -128,7 +134,7 @@ Signed-off-by: Robert Shearman <rshearma@vyatta.att-mail.com>
  	bool success = false;
  
  	/* The IPv4 code below accesses through the IPv4 header
-@@ -287,11 +300,11 @@ static bool mpls_egress(struct net *net,
+@@ -312,11 +325,11 @@
  		return false;
  
  	payload_type = rt->rt_payload_type;
@@ -142,7 +148,7 @@ Signed-off-by: Robert Shearman <rshearma@vyatta.att-mail.com>
  		struct iphdr *hdr4 = ip_hdr(skb);
  		u8 new_ttl;
  		skb->protocol = htons(ETH_P_IP);
-@@ -314,7 +327,7 @@ static bool mpls_egress(struct net *net,
+@@ -339,7 +352,7 @@
  		success = true;
  		break;
  	}
@@ -151,7 +157,7 @@ Signed-off-by: Robert Shearman <rshearma@vyatta.att-mail.com>
  		struct ipv6hdr *hdr6 = ipv6_hdr(skb);
  		skb->protocol = htons(ETH_P_IPV6);
  
-@@ -331,7 +344,7 @@ static bool mpls_egress(struct net *net,
+@@ -356,7 +369,7 @@
  		success = true;
  		break;
  	}
@@ -160,7 +166,7 @@ Signed-off-by: Robert Shearman <rshearma@vyatta.att-mail.com>
  		/* Should have decided which protocol it is by now */
  		break;
  	}
-@@ -486,6 +499,7 @@ static const struct nla_policy rtm_mpls_
+@@ -511,6 +524,7 @@
  	[RTA_DST]		= { .type = NLA_U32 },
  	[RTA_OIF]		= { .type = NLA_U32 },
  	[RTA_TTL_PROPAGATE]	= { .type = NLA_U8 },
@@ -168,7 +174,7 @@ Signed-off-by: Robert Shearman <rshearma@vyatta.att-mail.com>
  };
  
  struct mpls_route_config {
-@@ -500,6 +514,7 @@ struct mpls_route_config {
+@@ -525,6 +539,7 @@
  	u32			rc_output_label[MAX_NEW_LABELS];
  	u32			rc_nlflags;
  	enum mpls_payload_type	rc_payload_type;
@@ -176,7 +182,7 @@ Signed-off-by: Robert Shearman <rshearma@vyatta.att-mail.com>
  	struct nl_info		rc_nlinfo;
  	struct rtnexthop	*rc_mp;
  	int			rc_mp_len;
-@@ -526,6 +541,7 @@ static struct mpls_route *mpls_rt_alloc(
+@@ -551,6 +566,7 @@
  	rt->rt_nhn_alive = num_nh;
  	rt->rt_nh_size = nh_size;
  	rt->rt_via_offset = MPLS_NH_VIA_OFF(max_labels);
@@ -184,7 +190,7 @@ Signed-off-by: Robert Shearman <rshearma@vyatta.att-mail.com>
  
  	return rt;
  }
-@@ -784,12 +800,16 @@ static int mpls_nh_build_from_cfg(struct
+@@ -818,12 +834,16 @@
  	memcpy(__mpls_nh_via(rt, nh), cfg->rc_via, cfg->rc_via_alen);
  	nh->nh_via_alen = cfg->rc_via_alen;
  
@@ -201,7 +207,7 @@ Signed-off-by: Robert Shearman <rshearma@vyatta.att-mail.com>
  
  	return 0;
  
-@@ -800,6 +820,7 @@ errout:
+@@ -834,6 +854,7 @@
  static int mpls_nh_build(struct net *net, struct mpls_route *rt,
  			 struct mpls_nh *nh, int oif, struct nlattr *via,
  			 struct nlattr *newdst, u8 max_labels,
@@ -209,7 +215,7 @@ Signed-off-by: Robert Shearman <rshearma@vyatta.att-mail.com>
  			 struct netlink_ext_ack *extack)
  {
  	int err = -ENOMEM;
-@@ -823,6 +844,8 @@ static int mpls_nh_build(struct net *net
+@@ -857,6 +878,8 @@
  		nh->nh_via_table = MPLS_NEIGH_TABLE_UNSPEC;
  	}
  
@@ -218,7 +224,7 @@ Signed-off-by: Robert Shearman <rshearma@vyatta.att-mail.com>
  	err = mpls_nh_assign_dev(net, rt, nh, oif);
  	if (err)
  		goto errout;
-@@ -887,8 +910,9 @@ static int mpls_nh_build_multi(struct mp
+@@ -921,8 +944,9 @@
  			       struct netlink_ext_ack *extack)
  {
  	struct rtnexthop *rtnh = cfg->rc_mp;
@@ -229,7 +235,7 @@ Signed-off-by: Robert Shearman <rshearma@vyatta.att-mail.com>
  	int err = 0;
  	u8 nhs = 0;
  
-@@ -897,6 +921,7 @@ static int mpls_nh_build_multi(struct mp
+@@ -931,6 +955,7 @@
  
  		nla_via = NULL;
  		nla_newdst = NULL;
@@ -237,7 +243,7 @@ Signed-off-by: Robert Shearman <rshearma@vyatta.att-mail.com>
  
  		err = -EINVAL;
  		if (!rtnh_ok(rtnh, remaining))
-@@ -914,16 +939,33 @@ static int mpls_nh_build_multi(struct mp
+@@ -948,16 +973,33 @@
  
  			nla_via = nla_find(attrs, attrlen, RTA_VIA);
  			nla_newdst = nla_find(attrs, attrlen, RTA_NEWDST);
@@ -272,7 +278,7 @@ Signed-off-by: Robert Shearman <rshearma@vyatta.att-mail.com>
  
  		rtnh = rtnh_next(rtnh, &remaining);
  		nhs++;
-@@ -1913,6 +1955,38 @@ static int rtm_to_route_config(struct sk
+@@ -1974,6 +2016,38 @@
  				MPLS_TTL_PROP_DISABLED;
  			break;
  		}
@@ -311,7 +317,7 @@ Signed-off-by: Robert Shearman <rshearma@vyatta.att-mail.com>
  		default:
  			NL_SET_ERR_MSG_ATTR(extack, nla, "Unknown attribute");
  			/* Unsupported attribute */
-@@ -2001,6 +2075,25 @@ static int mpls_dump_route(struct sk_buf
+@@ -2068,6 +2142,25 @@
  			       ttl_propagate))
  			goto nla_put_failure;
  	}
@@ -337,7 +343,7 @@ Signed-off-by: Robert Shearman <rshearma@vyatta.att-mail.com>
  	if (rt->rt_nhn == 1) {
  		const struct mpls_nh *nh = rt->rt_nh;
  
-@@ -2058,6 +2151,18 @@ static int mpls_dump_route(struct sk_buf
+@@ -2125,6 +2218,18 @@
  					nh->nh_via_alen))
  				goto nla_put_failure;
  
@@ -356,7 +362,7 @@ Signed-off-by: Robert Shearman <rshearma@vyatta.att-mail.com>
  			/* length of rtnetlink header + attributes */
  			rtnh->rtnh_len = nlmsg_get_pos(skb) - (void *)rtnh;
  		} endfor_nexthops(rt);
-@@ -2223,6 +2328,15 @@ static inline size_t lfib_nlmsg_size(str
+@@ -2295,6 +2400,15 @@
  		NLMSG_ALIGN(sizeof(struct rtmsg))
  		+ nla_total_size(4)			/* RTA_DST */
  		+ nla_total_size(1);			/* RTA_TTL_PROPAGATE */
@@ -372,7 +378,7 @@ Signed-off-by: Robert Shearman <rshearma@vyatta.att-mail.com>
  
  	if (rt->rt_nhn == 1) {
  		struct mpls_nh *nh = rt->rt_nh;
-@@ -2246,6 +2360,13 @@ static inline size_t lfib_nlmsg_size(str
+@@ -2318,6 +2432,13 @@
  				nhsize += nla_total_size(2 + nh->nh_via_alen);
  			if (nh->nh_labels)
  				nhsize += nla_total_size(nh->nh_labels * 4);
@@ -386,27 +392,29 @@ Signed-off-by: Robert Shearman <rshearma@vyatta.att-mail.com>
  		} endfor_nexthops(rt);
  		/* nested attribute */
  		payload += nla_total_size(nhsize);
-@@ -2524,7 +2645,7 @@ static int resize_platform_label_table(s
- 			goto nort0;
+@@ -2606,7 +2727,7 @@
  		rt0->rt_nh->nh_dev = lo;
+ 		netdev_hold(lo, &rt0->rt_nh->nh_dev_tracker, GFP_KERNEL);
  		rt0->rt_protocol = RTPROT_KERNEL;
 -		rt0->rt_payload_type = MPT_IPV4;
 +		rt0->rt_payload_type = RTMPT_IPV4;
  		rt0->rt_ttl_propagate = MPLS_TTL_PROP_DEFAULT;
  		rt0->rt_nh->nh_via_table = NEIGH_LINK_TABLE;
  		rt0->rt_nh->nh_via_alen = lo->addr_len;
-@@ -2538,7 +2659,7 @@ static int resize_platform_label_table(s
- 			goto nort2;
+@@ -2623,7 +2744,7 @@
  		rt2->rt_nh->nh_dev = lo;
+ 		netdev_hold(lo, &rt2->rt_nh->nh_dev_tracker, GFP_KERNEL);
  		rt2->rt_protocol = RTPROT_KERNEL;
 -		rt2->rt_payload_type = MPT_IPV6;
 +		rt2->rt_payload_type = RTMPT_IPV6;
  		rt2->rt_ttl_propagate = MPLS_TTL_PROP_DEFAULT;
  		rt2->rt_nh->nh_via_table = NEIGH_LINK_TABLE;
  		rt2->rt_nh->nh_via_alen = lo->addr_len;
---- a/net/mpls/internal.h
-+++ b/net/mpls/internal.h
-@@ -96,7 +96,7 @@ struct mpls_nh { /* next hop label forwa
+Index: linux-vyatta/net/mpls/internal.h
+===================================================================
+--- linux-vyatta.orig/net/mpls/internal.h	2026-11-06 10:18:30.000000000 -0800
++++ linux-vyatta/net/mpls/internal.h	2026-11-08 16:04:24.654929434 -0800
+@@ -97,7 +97,7 @@
  	u8			nh_labels;
  	u8			nh_via_alen;
  	u8			nh_via_table;
@@ -415,7 +423,7 @@ Signed-off-by: Robert Shearman <rshearma@vyatta.att-mail.com>
  
  	u32			nh_label[];
  };
-@@ -154,6 +154,7 @@ struct mpls_route { /* next hop label fo
+@@ -155,6 +155,7 @@
  	u8			rt_nh_size;
  	u8			rt_via_offset;
  	u8			rt_reserved1;

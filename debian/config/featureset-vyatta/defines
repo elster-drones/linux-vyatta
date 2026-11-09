@@ -2,7 +2,7 @@
 compiler: gcc
 
 [relations]
-gcc: gcc (>= 4)
+gcc: gcc (>= 8.1)
 
 [abi]
 ignore-changes: *

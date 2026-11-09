@@ -4,6 +4,7 @@ Maintainer: Vyatta Package Maintainers <DL-vyatta-help@att.com>
 Standards-Version: 4.2.0
 Build-Depends:
  debhelper-compat (= 12), dh-exec,
+ linux-libc-dev,
 # used to sign the EFI binary on OBS
  dh-signobs <!stage1 !noobs>,
 # used by bvnos-linux-libc-dev

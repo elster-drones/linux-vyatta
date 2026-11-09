@@ -21,8 +21,10 @@ Cc: linux-mtd@lists.infradead.org
  drivers/mtd/devices/slram.c | 9 ++++++++-
  2 files changed, 13 insertions(+), 2 deletions(-)
 
---- a/drivers/mtd/devices/phram.c
-+++ b/drivers/mtd/devices/phram.c
+Index: elster-router-kernel/drivers/mtd/devices/phram.c
+===================================================================
+--- elster-router-kernel.orig/drivers/mtd/devices/phram.c
++++ elster-router-kernel/drivers/mtd/devices/phram.c
 @@ -365,7 +365,11 @@ static int phram_param_call(const char *
  #endif
  }
@@ -36,8 +38,10 @@ Cc: linux-mtd@lists.infradead.org
  MODULE_PARM_DESC(phram, "Memory region to map. \"phram=<name>,<start>,<length>[,<erasesize>]\"");
  
  #ifdef CONFIG_OF
---- a/drivers/mtd/devices/slram.c
-+++ b/drivers/mtd/devices/slram.c
+Index: elster-router-kernel/drivers/mtd/devices/slram.c
+===================================================================
+--- elster-router-kernel.orig/drivers/mtd/devices/slram.c
++++ elster-router-kernel/drivers/mtd/devices/slram.c
 @@ -43,6 +43,7 @@
  #include <linux/ioctl.h>
  #include <linux/init.h>
@@ -55,7 +59,7 @@ Cc: linux-mtd@lists.infradead.org
  MODULE_PARM_DESC(map, "List of memory regions to map. \"map=<name>, <start>, <length / end>\"");
  #else
  static char *map;
-@@ -281,11 +282,17 @@ static int __init init_slram(void)
+@@ -291,11 +292,17 @@ static int __init init_slram(void)
  #ifndef MODULE
  	char *devstart;
  	char *devlength;

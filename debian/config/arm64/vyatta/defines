@@ -1,0 +1,7 @@
+[base]
+flavours:
+ arm64
+
+[relations]
+gcc: gcc (>= 8.1) <!stage1 !cross !pkg.linux.nokernel>, gcc-aarch64-linux-gnu <!stage1 cross !pkg.linux.nokernel>, gcc-arm-linux-gnueabihf <!stage1 !pkg.linux.nokernel>
+headers%gcc: gcc

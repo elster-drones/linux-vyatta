@@ -25,12 +25,16 @@ rules.real and change Makefile.modfinal to look for it in both places.
  scripts/Makefile.modfinal | 6 ++++--
  1 file changed, 4 insertions(+), 2 deletions(-)
 
---- a/scripts/Makefile.modfinal
-+++ b/scripts/Makefile.modfinal
-@@ -28,11 +28,13 @@ ccflags-remove-y := $(CC_FLAGS_CFI)
- .module-common.o: $(srctree)/scripts/module-common.c FORCE
- 	$(call if_changed_rule,cc_o_c)
+Index: linux-vyatta/scripts/Makefile.modfinal
+===================================================================
+--- linux-vyatta.orig/scripts/Makefile.modfinal	2026-11-06 10:18:30.000000000 -0800
++++ linux-vyatta/scripts/Makefile.modfinal	2026-11-08 16:03:30.091560908 -0800
+@@ -32,11 +32,15 @@
+ cmd_check_tracepoint = $(objtree)/scripts/tracepoint-update --module $<;
+ endif
  
++ARCH_MODULE_LDS := $(word 1,$(wildcard $(objtree)/scripts/module.lds $(objtree)/arch/$(SRCARCH)/module.lds))
++
 +ARCH_MODULE_LDS := $(word 1,$(wildcard $(objtree)/scripts/module.lds $(objtree)/arch/$(SRCARCH)/module.lds))
 +
  quiet_cmd_ld_ko_o = LD [M]  $@
@@ -42,12 +46,12 @@ rules.real and change Makefile.modfinal to look for it in both places.
  
  quiet_cmd_btf_ko = BTF [M] $@
        cmd_btf_ko = 							\
-@@ -52,7 +54,7 @@ if_changed_except = $(if $(call newer_pr
- 	printf '%s\n' 'savedcmd_$@ := $(make-cmd)' > $(dot-target).cmd, @:)
+@@ -47,7 +51,7 @@
+ 	fi;
  
  # Re-generate module BTFs if either module's .ko or vmlinux changed
 -%.ko: %.o %.mod.o .module-common.o $(objtree)/scripts/module.lds $(and $(CONFIG_DEBUG_INFO_BTF_MODULES),$(KBUILD_BUILTIN),$(objtree)/vmlinux) FORCE
 +%.ko: %.o %.mod.o .module-common.o $(ARCH_MODULE_LDS) $(and $(CONFIG_DEBUG_INFO_BTF_MODULES),$(KBUILD_BUILTIN),$(objtree)/vmlinux) FORCE
- 	+$(call if_changed_except,ld_ko_o,$(objtree)/vmlinux)
+ 	+$(call if_changed,ld_ko_o)
  ifdef CONFIG_DEBUG_INFO_BTF_MODULES
  	+$(if $(newer-prereqs),$(call cmd,btf_ko))

@@ -46,15 +46,9 @@ binary:	binary-indep binary-arch
 
 binary-arch: build-arch
 	dh_testdir
-	echo "ERIK"
-	ls -laht /usr/src/packages/SOURCES/_projectcert.crt
-	echo "ERIKDONE"
 	$(MAKE) -f debian/rules.gen binary-arch_$(DEB_HOST_ARCH)
-	set -x
-	echo "ERIK: normal build done"
 ifeq ($(filter noobs,$(DEB_BUILD_PROFILES)),)
 	dh_signobs_pack
-	echo "Done Signing"
 endif
 binary-indep: build-indep
 	dh_testdir
@@ -119,6 +113,7 @@ debian/control debian/rules.gen: debian/bin/gencontrol.py $(CONTROL_FILES)
 ifeq ($(wildcard debian/control.md5sum),)
 	$(MAKE) -f debian/rules debian/control-real
 else
+	test -f debian/control && test -f debian/rules.gen && \
 	md5sum --check debian/control.md5sum --status || \
 		$(MAKE) -f debian/rules debian/control-real
 endif

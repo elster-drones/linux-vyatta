@@ -3,18 +3,19 @@
  include/uapi/linux/if_tun.h |   17 +++++++++++++++++
  2 files changed, 56 insertions(+), 4 deletions(-)
 
---- a/drivers/net/tun.c
-+++ b/drivers/net/tun.c
-@@ -100,7 +100,7 @@ static void tun_default_link_ksettings(s
- #define TUN_VNET_BE     0x40000000
- 
- #define TUN_FEATURES (IFF_NO_PI | IFF_ONE_QUEUE | IFF_VNET_HDR | \
--		      IFF_MULTI_QUEUE | IFF_NAPI | IFF_NAPI_FRAGS)
-+		      IFF_MULTI_QUEUE | IFF_NAPI | IFF_NAPI_FRAGS | IFF_META_HDR)
- 
- #define GOODCOPY_LEN 128
- 
-@@ -1799,6 +1799,8 @@ static ssize_t tun_get_user(struct tun_s
+Index: linux-vyatta/drivers/net/tun.c
+===================================================================
+--- linux-vyatta.orig/drivers/net/tun.c	2026-11-08 16:05:05.199711262 -0800
++++ linux-vyatta/drivers/net/tun.c	2026-11-08 16:07:23.094135404 -0800
+@@ -181,6 +181,7 @@
+  * file were attached to a persist device.
+  */
+ struct tun_struct {
++	bool meta_hdr; /* Selected with TUNSETMETAHDR, not IFF_BACKPRESSURE. */
+ 	struct tun_file __rcu	*tfiles[MAX_TAP_QUEUES];
+ 	unsigned int            numqueues;
+ 	unsigned int 		flags;
+@@ -1836,6 +1837,8 @@
  	bool zerocopy = false;
  	int err;
  	u32 rxhash = 0;
@@ -23,11 +24,11 @@
  	int skb_xdp = 1;
  	bool frags = tun_napi_frags_enabled(tfile);
  	enum skb_drop_reason drop_reason = SKB_DROP_REASON_NOT_SPECIFIED;
-@@ -1831,6 +1833,15 @@ static ssize_t tun_get_user(struct tun_s
- 		iov_iter_advance(from, vnet_hdr_sz - sizeof(gso));
+@@ -1870,6 +1873,15 @@
+ 		len -= vnet_hdr_sz;
  	}
  
-+	if (tun->flags & IFF_META_HDR) {
++	if (READ_ONCE(tun->meta_hdr)) {
 +		len -= sizeof(meta);
 +		if (len > total_len)
 +			return -EINVAL;
@@ -38,39 +39,31 @@
 +
  	if ((tun->flags & TUN_TYPE_MASK) == IFF_TAP) {
  		align += NET_IP_ALIGN;
- 		if (unlikely(len < ETH_HLEN ||
-@@ -1914,6 +1925,14 @@ static ssize_t tun_get_user(struct tun_s
- 		goto free_skb;
+ 		if (unlikely(len < ETH_HLEN || (hdr_len && hdr_len < ETH_HLEN)))
+@@ -1941,7 +1953,12 @@
+ 		}
  	}
  
+-	skb->dev = tun->dev;
 +	if (meta.flags & TUN_META_FLAG_IIF) {
-+		dev = __dev_get_by_index(&init_net, meta.iif);
-+		if (dev)
-+			skb->dev = dev;
-+		else
++		dev = __dev_get_by_index(dev_net(tun->dev), meta.iif);
++		if (!dev)
 +			dev = tun->dev;
 +	}
-+
++	skb->dev = dev;
  	switch (tun->flags & TUN_TYPE_MASK) {
  	case IFF_TUN:
  		if (tun->flags & IFF_NO_PI) {
-@@ -1933,13 +1952,12 @@ static ssize_t tun_get_user(struct tun_s
- 		}
- 
- 		if (pi.proto == htons(ETH_P_TEB)) {
+@@ -1972,7 +1989,7 @@
+ 				drop_reason = SKB_DROP_REASON_HDR_TRUNC;
+ 				goto drop;
+ 			}
 -			skb->protocol = eth_type_trans(skb, tun->dev);
 +			skb->protocol = eth_type_trans(skb, dev);
  		} else {
  			skb_reset_mac_header(skb);
  			skb->protocol = pi.proto;
-+			skb->dev = dev;
- 		}
--
--		skb->dev = tun->dev;
- 		break;
- 	case IFF_TAP:
- 		if (frags && !pskb_may_pull(skb, ETH_HLEN)) {
-@@ -1959,6 +1977,9 @@ static ssize_t tun_get_user(struct tun_s
+@@ -2005,6 +2022,9 @@
  		uarg->ops->complete(NULL, uarg, false);
  	}
  
@@ -80,11 +73,11 @@
  	skb_reset_network_header(skb);
  	skb_probe_transport_header(skb);
  	skb_record_rx_queue(skb, tfile->queue_index);
-@@ -2195,6 +2216,20 @@ static ssize_t tun_put_user(struct tun_s
- 		iov_iter_advance(iter, vnet_hdr_sz - sizeof(gso));
+@@ -2233,6 +2253,20 @@
+ 			return ret;
  	}
  
-+	if (tun->flags & IFF_META_HDR) {
++	if (READ_ONCE(tun->meta_hdr)) {
 +		struct tun_meta meta = { 0 };
 +
 +		meta.flags = TUN_META_FLAG_IIF;
@@ -101,27 +94,51 @@
  	if (vlan_hlen) {
  		int ret;
  		struct veth veth;
---- a/include/uapi/linux/if_tun.h
-+++ b/include/uapi/linux/if_tun.h
-@@ -28,6 +28,9 @@
- #define TUN_TAP_DEV	IFF_TAP
- #define TUN_TYPE_MASK   0x000f
+@@ -3340,6 +3374,29 @@
+ 			ret = -EFAULT;
+ 		break;
  
-+/* Vyatta extension */
-+#define TUN_META_HDR	IFF_META_HDR
++	case TUNSETMETAHDR: {
++		int enabled;
 +
- /* Ioctl defines */
- #define TUNSETNOCSUM  _IOW('T', 200, int) 
- #define TUNSETDEBUG   _IOW('T', 201, int) 
-@@ -71,6 +74,7 @@
- #define IFF_NAPI_FRAGS	0x0020
- /* Used in TUNSETIFF to bring up tun/tap without carrier */
- #define IFF_NO_CARRIER	0x0040
-+#define IFF_META_HDR	0x0080	/* Vyatta */
- #define IFF_NO_PI	0x1000
- /* This flag has no real effect */
- #define IFF_ONE_QUEUE	0x2000
-@@ -117,4 +121,17 @@ struct tun_filter {
++		if (get_user(enabled, (int __user *)argp)) {
++			ret = -EFAULT;
++			break;
++		}
++		if (enabled != 0 && enabled != 1) {
++			ret = -EINVAL;
++			break;
++		}
++		if (!!READ_ONCE(tun->meta_hdr) != enabled &&
++		    (tun->dev->flags & IFF_UP)) {
++			ret = -EBUSY;
++			break;
++		}
++		WRITE_ONCE(tun->meta_hdr, enabled);
++		break;
++	}
++	case TUNGETMETAHDR:
++		ret = put_user((int)READ_ONCE(tun->meta_hdr), (int __user *)argp);
++		break;
++
+ 	case TUNSETNOCSUM:
+ 		/* Disable/Enable checksum */
+ 
+Index: linux-vyatta/include/uapi/linux/if_tun.h
+===================================================================
+--- linux-vyatta.orig/include/uapi/linux/if_tun.h	2026-11-08 16:04:40.135216147 -0800
++++ linux-vyatta/include/uapi/linux/if_tun.h	2026-11-08 16:07:23.093463810 -0800
+@@ -63,6 +63,9 @@
+ #define TUNGETDEVNETNS _IO('T', 227)
+ 
+ #define TUNSETPERMADDR _IOW('T', 230, struct ifreq)
++/* Vyatta metadata framing is independent of the upstream IFF flags. */
++#define TUNSETMETAHDR _IOW('T', 231, int)
++#define TUNGETMETAHDR _IOR('T', 232, int)
+ 
+ /* TUNSETIFF ifr flags */
+ #define IFF_TUN		0x0001
+@@ -130,4 +133,17 @@
  	__u8   addr[][ETH_ALEN];
  };
  

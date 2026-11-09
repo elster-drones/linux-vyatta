@@ -9,21 +9,27 @@ Signed-off-by: Mandeep Rohilla <mrohilla@vyatta.att-mail.com>
  drivers/net/tun.c |    9 +++++++--
  1 file changed, 7 insertions(+), 2 deletions(-)
 
---- a/drivers/net/tun.c
-+++ b/drivers/net/tun.c
-@@ -1932,8 +1932,13 @@ static ssize_t tun_get_user(struct tun_s
+Index: linux-vyatta/drivers/net/tun.c
+===================================================================
+--- linux-vyatta.orig/drivers/net/tun.c	2026-11-08 16:04:40.134483776 -0800
++++ linux-vyatta/drivers/net/tun.c	2026-11-08 16:05:05.199711262 -0800
+@@ -1966,8 +1966,17 @@
  			}
  		}
  
--		skb_reset_mac_header(skb);
+-		skb_reset_network_header(skb);
 -		skb->protocol = pi.proto;
 +		if (pi.proto == htons(ETH_P_TEB)) {
++			if (!pskb_may_pull(skb, ETH_HLEN)) {
++				err = -EINVAL;
++				drop_reason = SKB_DROP_REASON_HDR_TRUNC;
++				goto drop;
++			}
 +			skb->protocol = eth_type_trans(skb, tun->dev);
 +		} else {
 +			skb_reset_mac_header(skb);
 +			skb->protocol = pi.proto;
 +		}
-+
- 		skb->dev = tun->dev;
  		break;
  	case IFF_TAP:
+ 		if (!pskb_may_pull(skb, ETH_HLEN)) {

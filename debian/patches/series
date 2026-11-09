@@ -137,3 +137,15 @@ bugfix/all/module-disable-matching-missing-version-crc.patch
 #
 ## ABI maintenance
 #build-fix.patch
+
+# GL-MT6000 eMMC calibration and MAC support, OpenWrt 64900e756efa.
+bsp/450-block-allow-setting-partition-of_node.patch
+bsp/451-block-partitions-of-assign-Device-Tree-node-to-parti.patch
+bsp/453-partitions-efi-allow-assigning-partition-Device-Tree.patch
+bsp/454-block-add-support-for-notifications.patch
+bsp/455-block-add-new-genhd-flag-GENHD_FL_NVMEM.patch
+bsp/456-nvmem-implement-block-NVMEM-provider.patch
+bsp/457-mmc-block-set-GENHD_FL_NVMEM.patch
+bsp/804-nvmem-core-support-mac-base-fixed-layout-cells.patch
+bsp/809-01-nvmem-core-generalize-mac-base-cells-handling.patch
+bsp/mt7986a-glinet-gl-mt6000.patch

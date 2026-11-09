@@ -29,9 +29,11 @@ cc: linux-efi@vger.kernel.org
  4 files changed, 51 insertions(+), 19 deletions(-)
  create mode 100644 drivers/firmware/efi/secureboot.c
 
---- a/arch/x86/kernel/setup.c
-+++ b/arch/x86/kernel/setup.c
-@@ -1073,19 +1073,7 @@ void __init setup_arch(char **cmdline_p)
+Index: linux-vyatta/arch/x86/kernel/setup.c
+===================================================================
+--- linux-vyatta.orig/arch/x86/kernel/setup.c	2026-11-06 10:18:30.000000000 -0800
++++ linux-vyatta/arch/x86/kernel/setup.c	2026-11-08 16:03:54.400249091 -0800
+@@ -1168,19 +1168,7 @@
  	/* Allocate bigger log buffer */
  	setup_log_buf(1);
  
@@ -52,9 +54,11 @@ cc: linux-efi@vger.kernel.org
  
  	reserve_initrd();
  
---- a/drivers/firmware/efi/Makefile
-+++ b/drivers/firmware/efi/Makefile
-@@ -25,6 +25,7 @@ subdir-$(CONFIG_EFI_STUB)		+= libstub
+Index: linux-vyatta/drivers/firmware/efi/Makefile
+===================================================================
+--- linux-vyatta.orig/drivers/firmware/efi/Makefile	2026-11-06 10:18:30.000000000 -0800
++++ linux-vyatta/drivers/firmware/efi/Makefile	2026-11-08 16:03:54.400722116 -0800
+@@ -25,6 +25,7 @@
  obj-$(CONFIG_EFI_BOOTLOADER_CONTROL)	+= efibc.o
  obj-$(CONFIG_EFI_TEST)			+= test/
  obj-$(CONFIG_EFI_DEV_PATH_PARSER)	+= dev-path-parser.o
@@ -62,8 +66,10 @@ cc: linux-efi@vger.kernel.org
  obj-$(CONFIG_APPLE_PROPERTIES)		+= apple-properties.o
  obj-$(CONFIG_EFI_RCI2_TABLE)		+= rci2-table.o
  obj-$(CONFIG_EFI_EMBEDDED_FIRMWARE)	+= embedded-firmware.o
---- /dev/null
-+++ b/drivers/firmware/efi/secureboot.c
+Index: linux-vyatta/drivers/firmware/efi/secureboot.c
+===================================================================
+--- /dev/null	1970-01-01 00:00:00.000000000 +0000
++++ linux-vyatta/drivers/firmware/efi/secureboot.c	2026-11-08 16:03:54.401023422 -0800
 @@ -0,0 +1,39 @@
 +
 +/* Core kernel secure boot support.
@@ -104,9 +110,11 @@ cc: linux-efi@vger.kernel.org
 +		}
 +	}
 +}
---- a/include/linux/efi.h
-+++ b/include/linux/efi.h
-@@ -863,6 +863,14 @@ static inline int efi_range_is_wc(unsign
+Index: linux-vyatta/include/linux/efi.h
+===================================================================
+--- linux-vyatta.orig/include/linux/efi.h	2026-11-06 10:18:30.000000000 -0800
++++ linux-vyatta/include/linux/efi.h	2026-11-08 16:03:54.401391135 -0800
+@@ -847,6 +847,14 @@
  #define EFI_MEM_ATTR		9	/* Did firmware publish an EFI_MEMORY_ATTRIBUTES table? */
  #define EFI_MEM_NO_SOFT_RESERVE	10	/* Is the kernel configured to ignore soft reservations? */
  #define EFI_PRESERVE_BS_REGIONS	11	/* Are EFI boot-services memory segments available? */
@@ -121,7 +129,7 @@ cc: linux-efi@vger.kernel.org
  
  #ifdef CONFIG_EFI
  /*
-@@ -887,6 +895,7 @@ static inline bool efi_rt_services_suppo
+@@ -871,6 +879,7 @@
  	return (efi.runtime_supported_mask & mask) == mask;
  }
  extern void efi_find_mirror(void);
@@ -129,7 +137,7 @@ cc: linux-efi@vger.kernel.org
  #else
  static inline bool efi_enabled(int feature)
  {
-@@ -906,6 +915,7 @@ static inline bool efi_rt_services_suppo
+@@ -890,6 +899,7 @@
  }
  
  static inline void efi_find_mirror(void) {}
@@ -137,9 +145,9 @@ cc: linux-efi@vger.kernel.org
  #endif
  
  extern int efi_status_to_err(efi_status_t status);
-@@ -1124,13 +1134,6 @@ static inline bool efi_runtime_disabled(
- extern void efi_call_virt_check_flags(unsigned long flags, const void *caller);
- extern unsigned long efi_call_virt_save_flags(void);
+@@ -1110,13 +1120,6 @@
+ 
+ void efi_runtime_assert_lock_held(void);
  
 -enum efi_secureboot_mode {
 -	efi_secureboot_mode_unset,

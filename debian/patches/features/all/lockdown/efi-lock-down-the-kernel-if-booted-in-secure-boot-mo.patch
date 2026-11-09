@@ -24,9 +24,11 @@ Signed-off-by: Salvatore Bonaccorso <carnil@debian.org>
  security/lockdown/lockdown.c      |    2 +-
  5 files changed, 27 insertions(+), 3 deletions(-)
 
---- a/arch/x86/kernel/setup.c
-+++ b/arch/x86/kernel/setup.c
-@@ -907,6 +907,8 @@ void __init setup_arch(char **cmdline_p)
+Index: elster-router-kernel/arch/x86/kernel/setup.c
+===================================================================
+--- elster-router-kernel.orig/arch/x86/kernel/setup.c
++++ elster-router-kernel/arch/x86/kernel/setup.c
+@@ -997,6 +997,8 @@ void __init setup_arch(char **cmdline_p)
  	if (efi_enabled(EFI_BOOT))
  		efi_init();
  
@@ -35,7 +37,7 @@ Signed-off-by: Salvatore Bonaccorso <carnil@debian.org>
  	reserve_ibft_region();
  	x86_init.resources.dmi_setup();
  
-@@ -1073,8 +1075,6 @@ void __init setup_arch(char **cmdline_p)
+@@ -1160,8 +1162,6 @@ void __init setup_arch(char **cmdline_p)
  	/* Allocate bigger log buffer */
  	setup_log_buf(1);
  
@@ -44,8 +46,10 @@ Signed-off-by: Salvatore Bonaccorso <carnil@debian.org>
  	reserve_initrd();
  
  	acpi_table_upgrade();
---- a/drivers/firmware/efi/secureboot.c
-+++ b/drivers/firmware/efi/secureboot.c
+Index: elster-router-kernel/drivers/firmware/efi/secureboot.c
+===================================================================
+--- elster-router-kernel.orig/drivers/firmware/efi/secureboot.c
++++ elster-router-kernel/drivers/firmware/efi/secureboot.c
 @@ -15,6 +15,7 @@
  #include <linux/efi.h>
  #include <linux/kernel.h>
@@ -65,9 +69,11 @@ Signed-off-by: Salvatore Bonaccorso <carnil@debian.org>
  			pr_info("Secure boot enabled\n");
  			break;
  		default:
---- a/include/linux/security.h
-+++ b/include/linux/security.h
-@@ -574,6 +574,7 @@ int security_inode_notifysecctx(struct i
+Index: elster-router-kernel/include/linux/security.h
+===================================================================
+--- elster-router-kernel.orig/include/linux/security.h
++++ elster-router-kernel/include/linux/security.h
+@@ -583,6 +583,7 @@ int security_inode_notifysecctx(struct i
  int security_inode_setsecctx(struct dentry *dentry, void *ctx, u32 ctxlen);
  int security_inode_getsecctx(struct inode *inode, struct lsm_context *cp);
  int security_locked_down(enum lockdown_reason what);
@@ -75,7 +81,7 @@ Signed-off-by: Salvatore Bonaccorso <carnil@debian.org>
  int lsm_fill_user_ctx(struct lsm_ctx __user *uctx, u32 *uctx_len,
  		      void *val, size_t val_len, u64 id, u64 flags);
  int security_bdev_alloc(struct block_device *bdev);
-@@ -1580,6 +1581,11 @@ static inline int security_locked_down(e
+@@ -1613,6 +1614,11 @@ static inline int security_locked_down(e
  {
  	return 0;
  }
@@ -87,8 +93,10 @@ Signed-off-by: Salvatore Bonaccorso <carnil@debian.org>
  static inline int lsm_fill_user_ctx(struct lsm_ctx __user *uctx,
  				    u32 *uctx_len, void *val, size_t val_len,
  				    u64 id, u64 flags)
---- a/security/lockdown/Kconfig
-+++ b/security/lockdown/Kconfig
+Index: elster-router-kernel/security/lockdown/Kconfig
+===================================================================
+--- elster-router-kernel.orig/security/lockdown/Kconfig
++++ elster-router-kernel/security/lockdown/Kconfig
 @@ -45,3 +45,18 @@ config LOCK_DOWN_KERNEL_FORCE_CONFIDENTI
  	 disabled.
  
@@ -108,8 +116,10 @@ Signed-off-by: Salvatore Bonaccorso <carnil@debian.org>
 +
 +	  Enabling this option results in kernel lockdown being
 +	  triggered in integrity mode if EFI Secure Boot is set.
---- a/security/lockdown/lockdown.c
-+++ b/security/lockdown/lockdown.c
+Index: elster-router-kernel/security/lockdown/lockdown.c
+===================================================================
+--- elster-router-kernel.orig/security/lockdown/lockdown.c
++++ elster-router-kernel/security/lockdown/lockdown.c
 @@ -24,7 +24,7 @@ static const enum lockdown_reason lockdo
  /*
   * Put the kernel into lock-down mode.
