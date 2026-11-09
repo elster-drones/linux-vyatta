@@ -895,7 +895,7 @@ install-bvnos-dev_$(ARCH)_$(FEATURESET)_$(FLAVOUR): BVNOS_UAPI_H = \
 		include/uapi/linux/mpls_iptunnel.h \
 		include/uapi/linux/lwtunnel.h \
 		include/uapi/linux/tcp.h
-install-bvnos-dev_$(ARCH)_$(FEATURESET)_$(FLAVOUR): scripts/unifdef
+install-bvnos-dev_$(ARCH)_$(FEATURESET)_$(FLAVOUR): $(STAMPS_DIR)/build-tools-headers
 install-bvnos-dev_$(ARCH)_$(FEATURESET)_$(FLAVOUR):
 	dh_testdir
 	dh_testroot
@@ -910,7 +910,7 @@ install-bvnos-dev_$(ARCH)_$(FEATURESET)_$(FLAVOUR):
 		fi; \
 		dest_file=$${header##*uapi\/}; \
 		mkdir -p $(pfull)/$${dest_file%/*.h}; \
-		scripts/headers_install.sh $(BUILD_DIR)/source_$(FEATURESET)/$$header $(pfull)/$$dest_file.bvnos; \
+		(cd $(BUILD_DIR)/build-tools/headers-tools && $(CURDIR)/scripts/headers_install.sh $(CURDIR)/$(BUILD_DIR)/source_$(FEATURESET)/$$header $(CURDIR)/$(pfull)/$$dest_file.bvnos); \
 		displaced=$$displaced" --displace /usr/include/"$$dest_file; \
 	done; \
 	dh_configpackage $${displaced//\/asm\//\/$(DEB_HOST_MULTIARCH)\/asm\/}
