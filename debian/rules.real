@@ -453,7 +453,7 @@ ifeq ($(DEBUG),True)
 	fi
 endif
 	cp $(DIR)/.config $(PACKAGE_DIR)/boot/config-$(REAL_VERSION)
-	debian/bin/kernel-source-metadata $(UPSTREAMVERSION) $(REAL_VERSION) $(PACKAGE_DIR)/usr/lib/linux-image-$(REAL_VERSION)/source.json
+	debian/bin/kernel-source-metadata $(DEB_VERSION_UPSTREAM) $(REAL_VERSION) $(PACKAGE_DIR)/usr/lib/linux-image-$(REAL_VERSION)/source.json
 	echo "ffffffffffffffff B The real System.map is in the linux-image-<version>-dbg package" \
 		> $(PACKAGE_DIR)/boot/System.map-$(REAL_VERSION)
 	rm -f $(PACKAGE_DIR)/lib/modules/$(REAL_VERSION)/build

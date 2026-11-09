@@ -1,0 +1,40 @@
+#!/bin/sh
+set -eu
+
+arch=$(dpkg --print-architecture)
+headers=$(dpkg-query -W -f='${Depends}' "linux-headers-$arch" |
+    sed -n 's/^\(linux-headers-[^ ]*\) .*/\1/p')
+test -n "$headers"
+release=${headers#linux-headers-}
+
+python3 - "$release" <<'PY'
+import json
+from pathlib import Path
+import re
+import subprocess
+import sys
+
+release = sys.argv[1]
+version = subprocess.check_output(
+    ['dpkg-query', '-W', '-f=${Version}', 'linux-image-' + release],
+    text=True).split('-', 1)[0]
+metadata = json.loads(Path('/usr/lib/linux-image-' + release + '/source.json').read_text())
+assert metadata['version'] == version, (metadata, version)
+assert metadata['release'] == release, metadata
+assert re.fullmatch('[0-9a-f]{40}', metadata['source_commit']), metadata
+PY
+
+cd "$AUTOPKGTEST_TMP"
+cat > smoke.c <<'EOF'
+#include <linux/init.h>
+#include <linux/module.h>
+static int __init smoke_init(void) { return 0; }
+static void __exit smoke_exit(void) { }
+module_init(smoke_init);
+module_exit(smoke_exit);
+MODULE_LICENSE("GPL");
+EOF
+echo 'obj-m := smoke.o' > Makefile
+make -C "/lib/modules/$release/build" M="$PWD" modules
+test -s smoke.ko
+test "$(modinfo -F vermagic ./smoke.ko | cut -d' ' -f1)" = "$release"

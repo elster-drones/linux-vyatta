@@ -166,7 +166,9 @@ part-long-up: This kernel is not suitable for SMP (multi-processor,
 
 [image]
 initramfs-generators: initramfs-tools initramfs-fallback
-breaks: fwupdate (<< 12-7), wireless-regdb (<< 2019.06.03-1~)
+# The old dataplane negotiates TUN metadata using upstream's IFF_BACKPRESSURE.
+# OBS versions the coordinated ioctl port using its source timestamp and SHA.
+breaks: fwupdate (<< 12-7), wireless-regdb (<< 2019.06.03-1~), vyatta-dataplane (<< 1794188341.c0b5b6f)
 recommends: apparmor
 
 [relations]

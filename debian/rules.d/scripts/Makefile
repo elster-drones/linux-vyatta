@@ -19,6 +19,7 @@ SCRIPTS =  \
 	checkversion.pl \
 	depmod.sh \
 	gcc-*.sh \
+	gen-btf.sh \
 	gen_initramfs_list.sh \
 	headers_install.sh \
 	kernel-doc \
@@ -28,6 +29,7 @@ SCRIPTS =  \
 	mksysmap \
 	mkuboot.sh \
 	modules-check.sh \
+	pahole-version.sh \
 	namespace.pl \
 	patch-kernel \
 	recordmcount.pl \

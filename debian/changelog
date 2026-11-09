@@ -7837,3 +7837,12 @@ linux (4.19.37-6) unstable; urgency=high
 
  -- Salvatore Bonaccorso <carnil@debian.org>  Fri, 19 Jul 2019 00:23:17 +0200
 
+linux (7.3.3-1elster4) vyatta; urgency=high
+
+  * Prevent upgrades from pairing this kernel with the old TUN metadata ABI.
+  * Record the full stable version in installed source provenance.
+  * Ship the pahole/BTF helpers used by external module builds and test the
+    installed image provenance and headers together.
+
+ -- OpenFactory <builds@openfactory.tech>  Mon, 09 Nov 2026 02:20:00 +0000
+
