@@ -1,9 +1,0 @@
-Tests: python
-Restrictions: superficial
-Depends: python3, pycodestyle, pyflakes3
-
-Tests: selftests
-Restrictions: breaks-testbed, needs-root, isolation-machine
-Depends: kexec-tools, python3, gcc, make, libpopt-dev, gcc-multilib [amd64], bc, fuse, libfuse-dev, pkg-config, linux-image-7.3.0-trunk-vyatta-amd64 [amd64], linux-image-7.3.0-trunk-vyatta-arm64 [arm64]
-Classes: smp
-

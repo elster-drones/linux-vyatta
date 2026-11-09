@@ -99,7 +99,7 @@ Provides: linux-image-vyatta-amd64, linux-image-vyatta, linux-image-vrf
 Depends: kmod, linux-base (>= 4.3~), linux-bootwrapper-7.3.0-trunk [powerpc ppc64], ${misc:Depends}, initramfs-tools (>= 0.120+deb8u2) [amd64] | linux-initramfs-tool [amd64]
 Recommends: firmware-linux-free, apparmor [amd64]
 Suggests: linux-doc-7.3, debian-kernel-handbook, grub-pc [amd64] | grub-efi-amd64 [amd64] | extlinux [amd64]
-Breaks: xserver-xorg-input-vmmouse (<< 1:13.0.99) [amd64], fwupdate (<< 12-7) [amd64], wireless-regdb (<< 2019.06.03-1~) [amd64], initramfs-tools (<< 0.120+deb8u2)
+Breaks: xserver-xorg-input-vmmouse (<< 1:13.0.99) [amd64], fwupdate (<< 12-7) [amd64], wireless-regdb (<< 2019.06.03-1~) [amd64], vyatta-dataplane (<< 1794188341.c0b5b6f) [amd64], initramfs-tools (<< 0.120+deb8u2)
 Description: Linux 7.3 for 64-bit PCs, VYATTA
  The Linux kernel 7.3 and modules for use on PCs with AMD64, Intel 64 or
  VIA Nano processors.
@@ -161,7 +161,7 @@ Provides: linux-image-vyatta-arm64, linux-image-vyatta
 Depends: kmod, linux-base (>= 4.3~), linux-bootwrapper-7.3.0-trunk [powerpc ppc64], ${misc:Depends}, initramfs-tools (>= 0.120+deb8u2) [arm64] | linux-initramfs-tool [arm64]
 Recommends: firmware-linux-free, apparmor [arm64]
 Suggests: linux-doc-7.3, debian-kernel-handbook
-Breaks: libmozjs185-1.0 [arm64], libmozjs-24-0 (<< 24.2.0-5.1~) [arm64], fwupdate (<< 12-7) [arm64], wireless-regdb (<< 2019.06.03-1~) [arm64], initramfs-tools (<< 0.120+deb8u2)
+Breaks: libmozjs185-1.0 [arm64], libmozjs-24-0 (<< 24.2.0-5.1~) [arm64], fwupdate (<< 12-7) [arm64], wireless-regdb (<< 2019.06.03-1~) [arm64], vyatta-dataplane (<< 1794188341.c0b5b6f) [arm64], initramfs-tools (<< 0.120+deb8u2)
 Description: Linux 7.3 for 64-bit ARMv8 machines, VYATTA
  The Linux kernel 7.3 and modules for use on 64-bit ARMv8 machines.
  .
