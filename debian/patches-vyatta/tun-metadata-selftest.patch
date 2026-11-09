@@ -1,0 +1,257 @@
+Subject: selftests: cover Vyatta TUN metadata and upstream flag coexistence
+
+--- a/tools/testing/selftests/net/Makefile
++++ b/tools/testing/selftests/net/Makefile
+@@ -197,6 +197,7 @@
+ 	sk_so_peek_off \
+ 	so_incoming_cpu \
+ 	tap \
++	tun_meta \
+ 	tcp_port_share \
+ 	tls \
+ 	udp_splice_checksum \
+--- /dev/null
++++ b/tools/testing/selftests/net/tun_meta.c
+@@ -0,0 +1,242 @@
++// SPDX-License-Identifier: GPL-2.0-only
++/* Vyatta metadata framing must remain independent of upstream TUN flags. */
++#define _GNU_SOURCE
++#include <arpa/inet.h>
++#include <errno.h>
++#include <fcntl.h>
++#include <linux/ethtool.h>
++#include <linux/filter.h>
++#include <linux/if_ether.h>
++#include <linux/if_tun.h>
++#include <linux/rtnetlink.h>
++#include <linux/sockios.h>
++#include <net/if.h>
++#include <net/if_arp.h>
++#include <netinet/ip.h>
++#include <netinet/udp.h>
++#include <poll.h>
++#include <sched.h>
++#include <sys/ioctl.h>
++#include <sys/socket.h>
++#include <sys/uio.h>
++#include <unistd.h>
++#include "kselftest_harness.h"
++
++_Static_assert(IFF_BACKPRESSURE == 0x80, "upstream flag ABI");
++_Static_assert(RTA_MPLS_PAYLOAD == 33, "Vyatta MPLS attribute ABI");
++_Static_assert(sizeof(struct tun_meta) == 10, "dataplane metadata ABI");
++
++#define MARK 0x733
++#define PAYLOAD "vyatta-metadata"
++
++static int link_flags(int sock, const char *name, short flags)
++{
++	struct ifreq req = { .ifr_flags = flags };
++
++	snprintf(req.ifr_name, IFNAMSIZ, "%s", name);
++	return ioctl(sock, SIOCSIFFLAGS, &req);
++}
++
++static int address(int sock, const char *name, unsigned long op, const char *ip)
++{
++	struct ifreq req = {};
++	struct sockaddr_in *addr = (struct sockaddr_in *)&req.ifr_addr;
++
++	snprintf(req.ifr_name, IFNAMSIZ, "%s", name);
++	addr->sin_family = AF_INET;
++	inet_pton(AF_INET, ip, &addr->sin_addr);
++	return ioctl(sock, op, &req);
++}
++
++FIXTURE(tun_metadata) {
++	int tun, sock;
++	char name[IFNAMSIZ];
++};
++
++FIXTURE_VARIANT(tun_metadata) {
++	bool pi;
++};
++FIXTURE_VARIANT_ADD(tun_metadata, no_pi) { .pi = false };
++FIXTURE_VARIANT_ADD(tun_metadata, packet_info) { .pi = true };
++
++FIXTURE_SETUP(tun_metadata)
++{
++	struct ifreq req = {};
++	int enabled = -1;
++
++	if (unshare(CLONE_NEWNET))
++		SKIP(return, "requires CAP_SYS_ADMIN and CAP_NET_ADMIN");
++	self->sock = socket(AF_INET, SOCK_DGRAM, 0);
++	ASSERT_GE(self->sock, 0);
++	self->tun = open("/dev/net/tun", O_RDWR | O_NONBLOCK);
++	ASSERT_GE(self->tun, 0);
++	req.ifr_flags = IFF_TUN | IFF_BACKPRESSURE | (variant->pi ? 0 : IFF_NO_PI);
++	ASSERT_EQ(ioctl(self->tun, TUNSETIFF, &req), 0);
++	snprintf(self->name, IFNAMSIZ, "%s", req.ifr_name);
++	/* Bit 0x80 is backpressure, and must not enable metadata framing. */
++	ASSERT_EQ(ioctl(self->tun, TUNGETMETAHDR, &enabled), 0);
++	ASSERT_EQ(enabled, 0);
++	enabled = 1;
++	ASSERT_EQ(ioctl(self->tun, TUNSETMETAHDR, &enabled), 0);
++	ASSERT_EQ(address(self->sock, self->name, SIOCSIFADDR, "10.73.3.1"), 0);
++	ASSERT_EQ(address(self->sock, self->name, SIOCSIFNETMASK, "255.255.255.0"), 0);
++	ASSERT_EQ(link_flags(self->sock, "lo", IFF_UP), 0);
++}
++
++FIXTURE_TEARDOWN(tun_metadata)
++{
++	close(self->tun);
++	close(self->sock);
++}
++
++TEST_F(tun_metadata, ioctl_contract)
++{
++	int enabled = 2;
++	struct ifreq req = {};
++
++	ASSERT_EQ(ioctl(self->tun, TUNSETMETAHDR, &enabled), -1);
++	ASSERT_EQ(errno, EINVAL);
++	ASSERT_EQ(ioctl(self->tun, TUNSETMETAHDR, NULL), -1);
++	ASSERT_EQ(errno, EFAULT);
++	ASSERT_EQ(ioctl(self->tun, TUNGETMETAHDR, NULL), -1);
++	ASSERT_EQ(errno, EFAULT);
++	ASSERT_EQ(link_flags(self->sock, self->name, IFF_UP), 0);
++	enabled = 0;
++	ASSERT_EQ(ioctl(self->tun, TUNSETMETAHDR, &enabled), -1);
++	ASSERT_EQ(errno, EBUSY);
++	enabled = 1;
++	ASSERT_EQ(ioctl(self->tun, TUNSETMETAHDR, &enabled), 0);
++	ASSERT_EQ(ioctl(self->tun, TUNGETMETAHDR, &enabled), 0);
++	ASSERT_EQ(enabled, 1);
++	ASSERT_EQ(ioctl(self->tun, TUNGETIFF, &req), 0);
++	ASSERT_NE(req.ifr_flags & IFF_BACKPRESSURE, 0);
++	ASSERT_EQ(link_flags(self->sock, self->name, 0), 0);
++	enabled = 0;
++	ASSERT_EQ(ioctl(self->tun, TUNSETMETAHDR, &enabled), 0);
++	ASSERT_EQ(ioctl(self->tun, TUNGETMETAHDR, &enabled), 0);
++	ASSERT_EQ(enabled, 0);
++}
++
++TEST_F(tun_metadata, permanent_address)
++{
++	const unsigned char mac[] = { 2, 0x73, 3, 0, 0, 1 };
++	unsigned char buf[sizeof(struct ethtool_perm_addr) + ETH_ALEN] = {};
++	struct ethtool_perm_addr *perm = (void *)buf;
++	struct ifreq req = {};
++
++	ASSERT_EQ(ioctl(self->tun, TUNSETLINK, ARPHRD_ETHER), 0);
++	memcpy(req.ifr_hwaddr.sa_data, mac, sizeof(mac));
++	ASSERT_EQ(ioctl(self->tun, TUNSETPERMADDR, &req), 0);
++	snprintf(req.ifr_name, IFNAMSIZ, "%s", self->name);
++	perm->cmd = ETHTOOL_GPERMADDR;
++	perm->size = ETH_ALEN;
++	req.ifr_data = (void *)perm;
++	ASSERT_EQ(ioctl(self->sock, SIOCETHTOOL, &req), 0);
++	ASSERT_EQ(perm->size, ETH_ALEN);
++	ASSERT_EQ(memcmp(perm->data, mac, ETH_ALEN), 0);
++}
++
++TEST_F(tun_metadata, output_mark)
++{
++	struct sockaddr_in peer = { .sin_family = AF_INET, .sin_port = htons(7333) };
++	struct pollfd pollfd = { .fd = self->tun, .events = POLLIN };
++	unsigned char buf[2048];
++	struct tun_meta meta;
++	unsigned int mark = MARK;
++	size_t off = variant->pi ? sizeof(struct tun_pi) : 0;
++	ssize_t len;
++
++	ASSERT_EQ(link_flags(self->sock, self->name, IFF_UP), 0);
++	ASSERT_EQ(setsockopt(self->sock, SOL_SOCKET, SO_MARK, &mark, sizeof(mark)), 0);
++	inet_pton(AF_INET, "10.73.3.2", &peer.sin_addr);
++	ASSERT_EQ(sendto(self->sock, PAYLOAD, sizeof(PAYLOAD), 0,
++			 (void *)&peer, sizeof(peer)), sizeof(PAYLOAD));
++	ASSERT_EQ(poll(&pollfd, 1, 2000), 1);
++	len = read(self->tun, buf, sizeof(buf));
++	ASSERT_EQ(len, off + sizeof(meta) + sizeof(struct iphdr) +
++		  sizeof(struct udphdr) + sizeof(PAYLOAD));
++	memcpy(&meta, buf + off, sizeof(meta));
++	ASSERT_EQ(meta.flags, TUN_META_FLAG_MARK | TUN_META_FLAG_IIF);
++	ASSERT_EQ(meta.mark, mark);
++	ASSERT_EQ(meta.iif, 0);
++	ASSERT_EQ(buf[off + sizeof(meta)] >> 4, 4);
++	ASSERT_EQ(memcmp(buf + len - sizeof(PAYLOAD), PAYLOAD, sizeof(PAYLOAD)), 0);
++}
++
++static uint16_t checksum(const void *data, size_t len)
++{
++	const unsigned char *p = data;
++	uint32_t sum = 0;
++
++	for (; len > 1; len -= 2, p += 2)
++		sum += (p[0] << 8) | p[1];
++	while (sum >> 16)
++		sum = (sum & 0xffff) + (sum >> 16);
++	return htons(~sum);
++}
++
++TEST_F(tun_metadata, input_mark_iif_and_teb)
++{
++	struct sock_filter filter[] = {
++		BPF_STMT(BPF_LD | BPF_W | BPF_ABS, SKF_AD_OFF + SKF_AD_MARK),
++		BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, MARK, 0, 1),
++		BPF_STMT(BPF_RET | BPF_K, 0xffff), BPF_STMT(BPF_RET | BPF_K, 0),
++	};
++	struct sock_fprog program = { .len = 4, .filter = filter };
++	struct sockaddr_in local = { .sin_family = AF_INET, .sin_port = htons(7333) };
++	struct { struct iphdr ip; struct udphdr udp; char data[sizeof(PAYLOAD)]; }
++		__attribute__((packed)) packet = {
++		.ip = { .version = 4, .ihl = 5, .ttl = 64, .protocol = IPPROTO_UDP },
++		.udp = { .source = htons(7334), .dest = htons(7333) }, .data = PAYLOAD,
++	};
++	struct tun_pi pi = { .proto = htons(ETH_P_TEB) };
++	struct ethhdr eth = { .h_proto = htons(ETH_P_IP) };
++	struct tun_meta meta = { .flags = TUN_META_FLAG_MARK | TUN_META_FLAG_IIF,
++		.mark = MARK, .iif = if_nametoindex("lo") };
++	struct iovec iov[] = { { &pi, variant->pi ? sizeof(pi) : 0 },
++		{ &meta, sizeof(meta) }, { &eth, variant->pi ? sizeof(eth) : 0 },
++		{ &packet, sizeof(packet) } };
++	char data[128], control[CMSG_SPACE(sizeof(struct in_pktinfo))];
++	struct iovec receive = { data, sizeof(data) };
++	struct msghdr msg = { .msg_iov = &receive, .msg_iovlen = 1,
++		.msg_control = control, .msg_controllen = sizeof(control) };
++	struct timeval timeout = { .tv_sec = 2 };
++	struct cmsghdr *cmsg;
++	int one = 1;
++	bool found = false;
++
++	ASSERT_EQ(link_flags(self->sock, self->name, IFF_UP), 0);
++	inet_pton(AF_INET, "10.73.3.1", &local.sin_addr);
++	ASSERT_EQ(bind(self->sock, (void *)&local, sizeof(local)), 0);
++	ASSERT_EQ(setsockopt(self->sock, SOL_SOCKET, SO_ATTACH_FILTER, &program, sizeof(program)), 0);
++	ASSERT_EQ(setsockopt(self->sock, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout)), 0);
++	ASSERT_EQ(setsockopt(self->sock, IPPROTO_IP, IP_PKTINFO, &one, sizeof(one)), 0);
++	packet.ip.tot_len = htons(sizeof(packet));
++	inet_pton(AF_INET, "10.73.3.2", &packet.ip.saddr);
++	packet.ip.daddr = local.sin_addr.s_addr;
++	packet.ip.check = checksum(&packet.ip, sizeof(packet.ip));
++	packet.udp.len = htons(sizeof(packet.udp) + sizeof(packet.data));
++	if (variant->pi) {
++		/* A partial Ethernet header is rejected before eth_type_trans(). */
++		iov[2].iov_len = 1;
++		ASSERT_EQ(writev(self->tun, iov, 3), -1);
++		ASSERT_EQ(errno, EINVAL);
++		iov[2].iov_len = sizeof(eth);
++	}
++	ASSERT_EQ(writev(self->tun, iov, 4), iov[0].iov_len + iov[1].iov_len +
++		  iov[2].iov_len + iov[3].iov_len);
++	ASSERT_EQ(recvmsg(self->sock, &msg, 0), sizeof(PAYLOAD));
++	ASSERT_EQ(memcmp(data, PAYLOAD, sizeof(PAYLOAD)), 0);
++	for (cmsg = CMSG_FIRSTHDR(&msg); cmsg; cmsg = CMSG_NXTHDR(&msg, cmsg)) {
++		if (cmsg->cmsg_level == IPPROTO_IP && cmsg->cmsg_type == IP_PKTINFO) {
++			struct in_pktinfo info;
++
++			memcpy(&info, CMSG_DATA(cmsg), sizeof(info));
++			ASSERT_EQ(info.ipi_ifindex, meta.iif);
++			found = true;
++		}
++	}
++	ASSERT_TRUE(found);
++}
++
++TEST_HARNESS_MAIN

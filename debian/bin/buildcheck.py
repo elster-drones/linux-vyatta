@@ -211,9 +211,33 @@ class CheckImage(object):
 
         fail = 0
 
+        fail |= self.check_config(out)
         fail |= self.check_size(out, image, uncompressed_image)
 
         return fail
+
+    def check_config(self, out):
+        if self.featureset != 'vyatta':
+            return 0
+        with open(os.path.join(self.dir, '.config')) as stream:
+            flags = dict(line.strip().split('=', 1) for line in stream
+                         if line.startswith('CONFIG_') and '=' in line)
+        required = {name: {'y', 'm'} for name in (
+            'TUN', 'NET_VRF', 'MPLS_ROUTING', 'MPLS_IPTUNNEL',
+            'NETFILTER_XT_TARGET_BYPASS', 'MODULE_SIG')}
+        required['NETFILTER_XTABLES_LEGACY'] = {'y'}
+        if self.arch == 'arm64':
+            required.update({name: {'y'} for name in (
+                'ARM64', 'EXT4_FS', 'DEVTMPFS', 'DEVTMPFS_MOUNT',
+                'CGROUPS', 'FHANDLE', 'INOTIFY_USER', 'EPOLL', 'SIGNALFD',
+                'TIMERFD', 'MMC_MTK', 'MMC_DW_ROCKCHIP', 'NVMEM_BLOCK',
+                'OF_PARTITION', 'MT798X_WMAC')})
+        missing = [name for name, values in required.items()
+                   if flags.get('CONFIG_' + name) not in values]
+        if missing:
+            out.write('Required Vyatta kernel configuration missing: ' +
+                      ', '.join(missing) + '\n')
+        return int(bool(missing))
 
     def check_size(self, out, image, uncompressed_image):
         value = self.config_entry_image.get('check-size')

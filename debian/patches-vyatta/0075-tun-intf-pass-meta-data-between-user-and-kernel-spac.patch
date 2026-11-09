@@ -142,7 +142,7 @@ Index: linux-vyatta/include/uapi/linux/if_tun.h
  	__u8   addr[][ETH_ALEN];
  };
  
-+/* Prepended to the packet when the flag TUN_META is set
++/* Prepended to each packet when TUNSETMETAHDR is enabled.
 + * This stuff is to transport meta data across the tap intf.
 + * the specific mark that should be applied to the packet.
 + * the iif and proto

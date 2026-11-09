@@ -1,3 +1,13 @@
+linux (7.3.3-1elster2) vyatta; urgency=high
+
+  * Enable the new upstream xtables legacy selector to retain Vyatta BYPASS
+    and existing IPv4/IPv6 iptables functionality on both architectures.
+  * Use MT798X_WMAC for the GL-MT6000 radio and check resolved build config.
+  * Hold metadata input devices through packet delivery in their namespace.
+  * Add packet-level metadata, TEB, flag and permanent address selftests.
+
+ -- OpenFactory <builds@openfactory.tech>  Mon, 09 Nov 2026 01:10:00 +0000
+
 linux (7.3.3-1elster1) vyatta; urgency=high
 
   * Import verified stable Linux 7.3.3, preserving Debian hardening and

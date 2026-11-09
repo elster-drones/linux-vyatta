@@ -24,6 +24,7 @@ tun-fake-ethtool.patch
 tun-add-ioctl-to-set-permanent-hardware-address.patch
 tun-intf-remove-eth-hdr-if-pi-is-teb.patch
 0075-tun-intf-pass-meta-data-between-user-and-kernel-spac.patch
+tun-metadata-device-lifetime.patch
 gre-sysctl-no-encap.patch
 #0001-Revert-ipmi_ssif-avoid-registering-duplicate-ssif-in.patch
 #
@@ -49,3 +50,5 @@ netfilter-target-bypass-uapi.patch
 netfilter-target-bypass.patch
 #act_mirred-dont-pull-mac.patch
 #mpls/mpls-ipv6-qualify-ecmp-lo.patch
+
+tun-metadata-selftest.patch
