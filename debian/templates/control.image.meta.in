@@ -1,6 +1,6 @@
 Package: linux-image@source_suffix@@localversion@
 Build-Profiles: <!stage1 !pkg.linux.nokernel !pkg.linux.nometa>
-Depends: linux-image-@abiname@@localversion@ (= ${binary:Version}), ${misc:Depends}
+Depends: linux-image-@abiname@@localversion@ (= ${binary:Version}), dpdk-modules-@abiname@@localversion@, bcm-linux-bde-modules-@abiname@@localversion@, bcm-kbp-linux-modules-@abiname@@localversion@, ${misc:Depends}
 Provides: linux-latest-modules-@abiname@@localversion@, wireguard-modules (= 1.0.0), virtualbox-guest-modules [amd64 i386]
 Description: Linux for @class@ (meta-package)
  This package depends on the latest Linux kernel and modules for use on

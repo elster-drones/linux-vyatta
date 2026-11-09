@@ -4,6 +4,8 @@ linux (7.3.3-1elster5) vyatta; urgency=high
   * Use current objtool HOSTCC/HOSTLD variables when cross-building the
     packaged kernel tools, so ARM64 packages contain ARM64 executables.
   * Reuse Kbuild's build-host unifdef when exporting Vyatta UAPI headers.
+  * Require the matching DPDK and Broadcom module packages from the Vyatta
+    image metapackage, including when upgrading an already installed system.
 
  -- OpenFactory <builds@openfactory.tech>  Mon, 09 Nov 2026 02:30:00 +0000
 
