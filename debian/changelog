@@ -1,3 +1,10 @@
+linux (7.3.3-1elster6) vyatta; urgency=medium
+
+  * Allow informational compiler and pahole warnings in the installed-header
+    autopkgtest; retain strict build, provenance and module ABI assertions.
+
+ -- OpenFactory <builds@openfactory.tech>  Mon, 09 Nov 2026 06:20:00 +0000
+
 linux (7.3.3-1elster5) vyatta; urgency=high
 
   * Include the Linux 7.3 hex helper declarations in the board MAC-cell port.
