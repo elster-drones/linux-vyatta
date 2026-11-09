@@ -33,6 +33,7 @@ static void __exit smoke_exit(void) { }
 module_init(smoke_init);
 module_exit(smoke_exit);
 MODULE_LICENSE("GPL");
+MODULE_DESCRIPTION("Installed header build test");
 EOF
 echo 'obj-m := smoke.o' > Makefile
 make -C "/lib/modules/$release/build" M="$PWD" modules

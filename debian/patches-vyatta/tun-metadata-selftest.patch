@@ -12,7 +12,7 @@ Subject: selftests: cover Vyatta TUN metadata and upstream flag coexistence
  	udp_splice_checksum \
 --- /dev/null
 +++ b/tools/testing/selftests/net/tun_meta.c
-@@ -0,0 +1,242 @@
+@@ -0,0 +1,248 @@
 +// SPDX-License-Identifier: GPL-2.0-only
 +/* Vyatta metadata framing must remain independent of upstream TUN flags. */
 +#define _GNU_SOURCE
@@ -166,8 +166,14 @@ Subject: selftests: cover Vyatta TUN metadata and upstream flag coexistence
 +	inet_pton(AF_INET, "10.73.3.2", &peer.sin_addr);
 +	ASSERT_EQ(sendto(self->sock, PAYLOAD, sizeof(PAYLOAD), 0,
 +			 (void *)&peer, sizeof(peer)), sizeof(PAYLOAD));
-+	ASSERT_EQ(poll(&pollfd, 1, 2000), 1);
-+	len = read(self->tun, buf, sizeof(buf));
++	/* Link-up may queue IPv6 control traffic before our IPv4 datagram. */
++	for (int i = 0; i < 8; i++) {
++		ASSERT_EQ(poll(&pollfd, 1, 2000), 1);
++		len = read(self->tun, buf, sizeof(buf));
++		ASSERT_GE(len, off + sizeof(meta) + 1);
++		if ((buf[off + sizeof(meta)] >> 4) == 4)
++			break;
++	}
 +	ASSERT_EQ(len, off + sizeof(meta) + sizeof(struct iphdr) +
 +		  sizeof(struct udphdr) + sizeof(PAYLOAD));
 +	memcpy(&meta, buf + off, sizeof(meta));

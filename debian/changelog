@@ -6,6 +6,8 @@ linux (7.3.3-1elster5) vyatta; urgency=high
   * Reuse Kbuild's build-host unifdef when exporting Vyatta UAPI headers.
   * Require the matching DPDK and Broadcom module packages from the Vyatta
     image metapackage, including when upgrading an already installed system.
+  * Read toolchain overrides from the kernel object tree for external modules.
+  * Select IPv4 test traffic amid unrelated IPv6 control packets.
 
  -- OpenFactory <builds@openfactory.tech>  Mon, 09 Nov 2026 02:30:00 +0000
 
