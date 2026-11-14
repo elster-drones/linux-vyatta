@@ -1,0 +1,78 @@
+#!/usr/bin/python3
+"""Exercise the DANOS multicast notification wire contract in a private netns."""
+import fcntl
+import json
+import os
+import platform
+import socket
+import struct
+import subprocess
+import time
+
+subprocess.run(['modprobe', 'tun'], check=True)
+os.unshare(os.CLONE_NEWNET)
+tap = os.open('/dev/net/tun', os.O_RDWR)
+name = b'of-mcast-proof'
+fcntl.ioctl(tap, 0x400454ca, struct.pack('16sH', name, 0x0002 | 0x1000))
+name = name.decode()
+subprocess.run(['ip', 'link', 'set', name, 'up'], check=True)
+subprocess.run(['ip', 'addr', 'add', '192.0.2.1/24', 'dev', name], check=True)
+subprocess.run(['ip', '-6', 'addr', 'add', '2001:db8::1/64', 'dev', name, 'nodad'], check=True)
+index = socket.if_nametoindex(name)
+netlink = socket.socket(socket.AF_NETLINK, socket.SOCK_RAW, socket.NETLINK_ROUTE)
+netlink.bind((0, 1))  # RTNLGRP_LINK: the existing controller subscription.
+events = []
+
+def expect(kind, address):
+    deadline = time.monotonic() + 2
+    while time.monotonic() < deadline:
+        netlink.settimeout(deadline - time.monotonic())
+        try:
+            data = netlink.recv(65536)
+        except TimeoutError:
+            break
+        offset = 0
+        while offset + 16 <= len(data):
+            size, message, flags, sequence, pid = struct.unpack_from('IHHII', data, offset)
+            assert size >= 16 and offset + size <= len(data)
+            if message in [20, 21] and size >= 24:
+                family, prefix, address_flags, scope, interface = struct.unpack_from('BBBBI', data, offset + 16)
+                attribute = offset + 24
+                while attribute + 4 <= offset + size:
+                    length, tag = struct.unpack_from('HH', data, attribute)
+                    assert length >= 4 and attribute + length <= offset + size
+                    value = data[attribute + 4:attribute + length]
+                    if family == 0 and interface == index and tag == 1 and value == address:
+                        assert message == kind and scope == 253 and address_flags & 0x80
+                        events.append({'type': message, 'family': family, 'ifindex': interface,
+                                       'attribute': 'IFA_ADDRESS', 'mac': value.hex(':')})
+                        return
+                    attribute += (length + 3) & ~3
+            offset += (size + 3) & ~3
+    raise AssertionError({'missing_type': kind, 'mac': address.hex(':'), 'ifindex': index,
+                          'kernel': platform.release(), 'events': events})
+
+for family, groups, mac in [
+    (socket.AF_INET, ['239.42.1.77', '238.42.1.77'], bytes.fromhex('01005e2a014d')),
+    (socket.AF_INET6, ['ff02::114', 'ff03::114'], bytes.fromhex('333300000114')),
+]:
+    members = [socket.socket(family, socket.SOCK_DGRAM) for _ in groups]
+    try:
+        for member, group in zip(members, groups):
+            if family == socket.AF_INET:
+                request = struct.pack('4s4si', socket.inet_aton(group), b'\0' * 4, index)
+                member.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP, request)
+            else:
+                request = struct.pack('16sI', socket.inet_pton(family, group), index)
+                member.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_JOIN_GROUP, request)
+            expect(20, mac)  # RTM_NEWADDR for both references to the shared MAC.
+        for member in members:
+            member.close()
+            expect(21, mac)  # RTM_DELADDR for each released reference.
+    finally:
+        for member in members:
+            member.close()
+netlink.close()
+os.close(tap)
+print(json.dumps({'kernel': platform.release(), 'private_namespace': True,
+                  'shared_mac_reference_events': events, 'passed': True}))

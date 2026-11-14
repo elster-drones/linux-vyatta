@@ -1,3 +1,12 @@
+linux (7.3.3-1elster8) vyatta; urgency=high
+
+  * Restore multicast hardware address notifications required by the DANOS
+    controller and dataplane receive filters for OSPF and IPv6 groups.
+  * Exercise the real AF_UNSPEC netlink wire contract and shared-MAC
+    reference events in an isolated network namespace autopkgtest.
+
+ -- OpenFactory <builds@openfactory.tech>  Sat, 14 Nov 2026 12:50:00 +0000
+
 linux (7.3.3-1elster7) vyatta; urgency=medium
 
   * Advertise VRF enabled by the shared Vyatta feature set on ARM64 as well

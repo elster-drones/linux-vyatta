@@ -7,7 +7,7 @@
 ## Patches that should be submitted upstream
 #team_set_IFF_SLAVE_on_team_ports.patch
 #0151-net-sysfs-expose-operstate-up-transition-count.patch
-#mcast-hw-address-netlink-messages.patch
+mcast-hw-address-netlink-messages.patch
 mpls/0005-mpls-differentiate-implicit-null-and-unlabeled-neigh.patch
 #mpls/0006-mpls-fix-incorrect-decrement-of-ttl-on-encap-using-l.patch
 #mpls/0007-mpls-update-pmtu-when-too-big.patch

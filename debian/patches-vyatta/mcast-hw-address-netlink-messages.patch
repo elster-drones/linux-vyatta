@@ -1,26 +1,26 @@
 Netlink messages for multicast HW addr programming
-    
-Add RTM_NEWADDR and RTM_DELADDR netlink messages to indicate
-interest in specific multicast hardware addresses. These messages
-are sent when addressed are added or deleted from the appropriate
-interface driver.
+
+Restore the existing DANOS AF_UNSPEC/IFA_ADDRESS multicast membership
+notifications for the current Linux 7.3.3 address-list implementation.
+The controller and dataplane use these messages for reference-counted
+multicast receive filters, including OSPF and IPv6 neighbor discovery.
 
 Signed-off-by: Patrick Ruddy <pruddy@vyatta.att-mail.com>
----
- net/core/dev_addr_lists.c |   65 ++++++++++++++++++++++++++++++++++++++++++++--
- 1 file changed, 63 insertions(+), 2 deletions(-)
+
+Refreshed from the verified Linux 6.18 port for Linux 7.3.3. Keep the
+existing wire contract and emit each successful add/delete notification.
 
 --- a/net/core/dev_addr_lists.c
 +++ b/net/core/dev_addr_lists.c
-@@ -8,6 +8,7 @@
-  */
- 
- #include <linux/netdevice.h>
-+#include <net/netlink.h>
- #include <linux/rtnetlink.h>
- #include <linux/export.h>
+@@ -13,6 +13,7 @@
  #include <linux/list.h>
-@@ -766,6 +767,62 @@ out:
+ #include <linux/spinlock.h>
+ #include <kunit/visibility.h>
++#include <net/netlink.h>
+ 
+ #include "dev.h"
+ 
+@@ -989,6 +990,62 @@
  }
  EXPORT_SYMBOL(dev_mc_add_excl);
  
@@ -56,7 +56,7 @@ Signed-off-by: Patrick Ruddy <pruddy@vyatta.att-mail.com>
 +		+ nla_total_size(MAX_ADDR_LEN);
 +}
 +
-+static void mc_addr_notify(struct net_device *dev, const unsigned char * addr,
++static void mc_addr_notify(struct net_device *dev, const unsigned char *addr,
 +			   int type)
 +{
 +	struct net *net = dev_net(dev);
@@ -76,17 +76,17 @@ Signed-off-by: Patrick Ruddy <pruddy@vyatta.att-mail.com>
 +	rtnl_notify(skb, net, 0, RTNLGRP_LINK, NULL, GFP_ATOMIC);
 +	return;
 +errout:
-+ 	if (err < 0)
++	if (err < 0)
 +		rtnl_set_sk_err(net, RTNLGRP_LINK, err);
 +}
 +
  static int __dev_mc_add(struct net_device *dev, const unsigned char *addr,
  			bool global)
  {
-@@ -774,8 +831,10 @@ static int __dev_mc_add(struct net_devic
- 	netif_addr_lock_bh(dev);
+@@ -998,8 +1055,10 @@
  	err = __hw_addr_add_ex(&dev->mc, addr, dev->addr_len,
- 			       NETDEV_HW_ADDR_T_MULTICAST, global, false, 0);
+ 			       NETDEV_HW_ADDR_T_MULTICAST, global, false,
+ 			       0, false);
 -	if (!err)
 +	if (!err) {
  		__dev_set_rx_mode(dev);
@@ -95,7 +95,7 @@ Signed-off-by: Patrick Ruddy <pruddy@vyatta.att-mail.com>
  	netif_addr_unlock_bh(dev);
  	return err;
  }
-@@ -814,8 +873,10 @@ static int __dev_mc_del(struct net_devic
+@@ -1038,8 +1097,10 @@
  	netif_addr_lock_bh(dev);
  	err = __hw_addr_del_ex(&dev->mc, addr, dev->addr_len,
  			       NETDEV_HW_ADDR_T_MULTICAST, global, false);

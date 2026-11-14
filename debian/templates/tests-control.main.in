@@ -6,3 +6,8 @@ Tests: installed-packages
 Depends: build-essential, python3, kmod, linux-headers-amd64 [amd64], linux-headers-arm64 [arm64], linux-image-vyatta-amd64 [amd64], linux-image-vyatta-arm64 [arm64]
 Architecture: amd64 arm64
 Restrictions: allow-stderr
+
+Tests: multicast-notifications
+Restrictions: needs-root, isolation-machine
+Depends: python3, iproute2, kmod, linux-image-vyatta-amd64 [amd64], linux-image-vyatta-arm64 [arm64]
+Architecture: amd64 arm64
